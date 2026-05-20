@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  agent:
+    build: .
+    container_name: ai-data-agent
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent-postgres
+    environment:
+      POSTGRES_DB: agent_experience
+      POSTGRES_USER: agent_user
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_user -d agent_experience"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: agent-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  chroma_data:

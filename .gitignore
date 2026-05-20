@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+knowledge/chroma_db/
+chroma_db/
+logs/
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak*
+.DS_Store
+auth-profiles.json

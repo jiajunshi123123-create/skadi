@@ -1,0 +1,186 @@
+# ===================================================================
+# Data Dictionary Configuration (Example)
+# ===================================================================
+# This file describes your database schema for the AI agent.
+#
+# HOW TO USE:
+#   1. Copy this file to `data_dictionary.yml` in the same directory.
+#   2. Edit the copy to match your real tables/fields.
+#   3. Restart the service so the new dictionary is picked up.
+#
+# The agent will load `data_dictionary.yml` if present; otherwise it
+# falls back to this example file. You can also override the path via
+# the DATA_DICTIONARY_PATH environment variable.
+# ===================================================================
+
+database:
+  type: mysql            # mysql / postgresql / starrocks
+  name: your_database
+
+tables:
+  # -----------------------------------------------------------------
+  # Table 1: New user registration (DATE partition, has today's data)
+  # -----------------------------------------------------------------
+  - name: table_new_users
+    description: "New user registration records"
+    partition_key: date
+    partition_type: DATE          # DATE or DATETIME
+    has_today_data: true          # Whether table contains today's data
+    fields:
+      - name: date
+        type: DATE
+        description: "Registration date (partition key)"
+      - name: user_id
+        type: BIGINT
+        description: "Unique user identifier"
+      - name: city
+        type: VARCHAR
+        description: "User city"
+      - name: province
+        type: VARCHAR
+        description: "User province"
+    typical_queries:
+      - description: "Daily new users count (last 7 days)"
+        sql: |
+          SELECT date, COUNT(DISTINCT user_id) AS new_users
+          FROM table_new_users
+          WHERE date BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+                         AND CURRENT_DATE()
+          GROUP BY date
+          ORDER BY date
+    baseline:
+      daily_avg: 10000
+      description: "Average daily new user registrations"
+
+  # -----------------------------------------------------------------
+  # Table 2: Daily active user events (DATETIME partition, half-open)
+  # -----------------------------------------------------------------
+  - name: table_dau_events
+    description: "Daily active user events (use for DAU/active user queries)"
+    partition_key: dt_utc
+    partition_type: DATETIME
+    has_today_data: false
+    fields:
+      - name: dt_utc
+        type: DATETIME
+        description: "Event timestamp (partition key, use half-open interval)"
+      - name: user_id
+        type: VARCHAR
+        description: "User identifier"
+      - name: event_type
+        type: VARCHAR
+        description: "Event type code"
+      - name: event_value
+        type: INT
+        description: "Event value/count"
+    typical_queries:
+      - description: "DAU count for a single day"
+        sql: |
+          SELECT COUNT(DISTINCT user_id) AS dau
+          FROM table_dau_events
+          WHERE dt_utc >= '2026-01-01' AND dt_utc < '2026-01-02'
+    baseline:
+      daily_avg: 30000
+      description: "Average daily active users"
+
+  # -----------------------------------------------------------------
+  # Table 3: Core behavior daily aggregates
+  # -----------------------------------------------------------------
+  - name: table_core_behavior
+    description: "Core behavior aggregates (e.g. exercises, reading, check-ins)"
+    partition_key: dt_utc
+    partition_type: DATETIME
+    has_today_data: false
+    fields:
+      - name: dt_utc
+        type: DATETIME
+        description: "Date partition (DATETIME)"
+      - name: user_id
+        type: VARCHAR
+        description: "User identifier"
+      - name: event_cnt
+        type: BIGINT
+        description: "Event occurrence count"
+      - name: user_cnt
+        type: BIGINT
+        description: "User count"
+    typical_queries:
+      - description: "Core active user count"
+        sql: |
+          SELECT COUNT(DISTINCT user_id) AS core_active
+          FROM table_core_behavior
+          WHERE dt_utc >= '2026-01-01' AND dt_utc < '2026-01-02'
+
+  # -----------------------------------------------------------------
+  # Table 4: Product usage detail
+  # -----------------------------------------------------------------
+  - name: table_product_usage
+    description: "Product-level usage detail (one row per user per product per day)"
+    partition_key: dt
+    partition_type: DATETIME
+    has_today_data: false
+    fields:
+      - name: dt
+        type: DATETIME
+        description: "Date partition"
+      - name: uid
+        type: VARCHAR
+        description: "User id (note: this table uses `uid`, not `user_id`)"
+      - name: product_id
+        type: VARCHAR
+        description: "Product identifier"
+      - name: name
+        type: VARCHAR
+        description: "Product name (embedded in fact table, no JOIN required)"
+    typical_queries:
+      - description: "Top products by active users"
+        sql: |
+          SELECT product_id, name AS product_name,
+                 COUNT(DISTINCT uid) AS active_users
+          FROM table_product_usage
+          WHERE dt >= '{start_date}' AND dt < '{end_date}'
+          GROUP BY product_id, name
+          ORDER BY active_users DESC
+          LIMIT 20
+
+  # -----------------------------------------------------------------
+  # Table 5: Order records (DATETIME partition, has today's data)
+  # -----------------------------------------------------------------
+  - name: table_orders
+    description: "Product order records"
+    partition_key: created_at
+    partition_type: DATETIME
+    has_today_data: true
+    fields:
+      - name: order_id
+        type: BIGINT
+        description: "Order ID"
+      - name: user_id
+        type: BIGINT
+        description: "User who placed the order"
+      - name: amount
+        type: DECIMAL
+        description: "Order amount"
+      - name: status
+        type: VARCHAR
+        description: "Order status (paid/pending/cancelled)"
+      - name: created_at
+        type: DATETIME
+        description: "Order creation time (partition key)"
+
+# -------------------------------------------------------------------
+# Global query rules - injected as 查询规则 section in the prompt.
+# Each top-level key becomes a sub-heading; each list item is a bullet.
+# -------------------------------------------------------------------
+rules:
+  date_handling:
+    - "DATE type fields: use BETWEEN with CURRENT_DATE() as upper bound (inclusive of today)"
+    - "DATETIME type fields: use half-open interval `>= start AND < end`"
+    - "Never wrap a DATE-type field with the DATE() function"
+    - "For tables with has_today_data=true, the upper bound should include today"
+
+  sql_safety:
+    - "Only SELECT statements are allowed (no INSERT/UPDATE/DELETE/DROP)"
+    - "Always include the partition key in the WHERE clause to avoid full scans"
+    - "Use COUNT(DISTINCT user_id) for unique user counts, not COUNT(*)"
+    - "Query time range must not exceed 90 days"

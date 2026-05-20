@@ -1,0 +1,18 @@
+# Core
+langchain-openai>=0.1.0
+langgraph>=0.1.0
+python-dotenv>=1.0.0
+
+# Database Adapters
+pymysql>=1.1.0
+psycopg2-binary>=2.9.0
+
+# Vector Store
+chromadb>=0.4.0
+
+# Messaging (DingTalk - replaceable)
+dingtalk-stream>=0.10.0
+
+# Utilities
+aiohttp>=3.9.0
+PyYAML>=6.0

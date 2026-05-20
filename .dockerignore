@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.git/
+.env
+*.bak*
+logs/
+chroma_db/
+.idea/
+*.md
+!README.md
+docs/
+tests/
