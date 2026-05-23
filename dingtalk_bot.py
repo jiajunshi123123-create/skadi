@@ -5,7 +5,7 @@
 - Agent调用方式替换为 LangGraph 编排器 (forward_to_langgraph)
 - 其他逻辑（DingTalk Stream、消息处理、会话管理、审计日志）保持不变
 """
-import json, logging, os, re, traceback
+import json, logging, os, re, time, traceback
 from datetime import datetime, timezone, timedelta
 from dingtalk_stream import AckMessage, ChatbotHandler, ChatbotMessage, Credential, DingTalkStreamClient
 from openai import OpenAI
@@ -15,6 +15,7 @@ import uuid
 import asyncio
 from agent_forward import forward_to_langgraph  # 改造: 使用 LangGraph 编排器
 from session_store_pg import save_session, get_session, delete_session
+from learning.feedback_loop import feedback_loop
 
 # Load .env manually (systemd truncates at # in values)
 def _load_env(path=os.environ.get("ENV_FILE", "/opt/workspace/.env")):
@@ -34,6 +35,77 @@ def _load_env(path=os.environ.get("ENV_FILE", "/opt/workspace/.env")):
         pass
 
 _load_env()
+
+# === 消息去重缓存 ===
+# 防止钉钉 Stream 超时重发导致重复处理
+_msg_dedup_cache: dict = {}  # {msg_id: timestamp}
+_MSG_DEDUP_TTL = 300  # 5分钟TTL，超过后允许重新处理
+
+def _is_duplicate_msg(msg_id: str) -> bool:
+    """
+    检查消息是否重复。同时清理过期条目防止内存泄漏。
+    
+    Returns:
+        True 表示重复消息，应跳过处理
+    """
+    if not msg_id:
+        return False  # 无法判断，放行
+    
+    now = time.time()
+    
+    # 清理过期条目（每次检查时顺便清理）
+    expired_keys = [k for k, t in _msg_dedup_cache.items() if now - t > _MSG_DEDUP_TTL]
+    for k in expired_keys:
+        del _msg_dedup_cache[k]
+    
+    # 判断是否重复
+    if msg_id in _msg_dedup_cache:
+        return True
+    
+    # 记录新消息
+    _msg_dedup_cache[msg_id] = now
+    return False
+
+# M3: 追问上下文内存缓存
+_last_context_cache: dict = {}
+
+def save_last_context(user_id: str, context: dict):
+    """保存用户最近一轮查询上下文，context为None时清除缓存"""
+    if context is None:
+        _last_context_cache.pop(user_id, None)
+        return
+    _last_context_cache[user_id] = {**context, 'saved_at': time.time()}
+
+def get_last_context(user_id: str, ttl: int = 3600) -> dict:
+    """获取上一轮上下文，过期返回None"""
+    ctx = _last_context_cache.get(user_id)
+    if not ctx:
+        return None
+    if time.time() - ctx.get('saved_at', 0) > ttl:
+        del _last_context_cache[user_id]
+        return None
+    return ctx
+
+# M4: 待确认建议查询缓存（用户回复「是」时自动执行建议查询）
+_pending_suggestion_cache: dict = {}
+
+def save_pending_suggestion(user_id: str, suggested_query: str):
+    """保存 Plan Agent 返回的建议查询，用户回复「是」时替换查询"""
+    _pending_suggestion_cache[user_id] = {
+        'suggested_query': suggested_query,
+        'saved_at': time.time(),
+    }
+    logger.info(f"[M4] 保存待确认建议: user={user_id}, query={suggested_query[:60]}")
+
+def get_pending_suggestion(user_id: str, ttl: int = 600) -> str:
+    """获取待确认的建议查询，过期返回None"""
+    entry = _pending_suggestion_cache.get(user_id)
+    if not entry:
+        return None
+    if time.time() - entry.get('saved_at', 0) > ttl:
+        del _pending_suggestion_cache[user_id]
+        return None
+    return entry.get('suggested_query')
 
 # Concurrency protection for shared state (P0 fix)
 _store_lock = asyncio.Lock()
@@ -474,9 +546,81 @@ def fmt(p):
     return "\n".join(lines)
 
 class BotHandler(ChatbotHandler):
+    def _is_follow_up(self, prompt: str) -> bool:
+        """
+        M3: 识别用户消息是否为追问（对上一轮查询的扩展）
+        
+        判断逻辑:
+        1. 消息较短（<30字）且包含追问关键词 → 大概率是追问
+        2. 以追问动词开头 → 是追问
+        """
+        # 追问强信号关键词（出现即判定为追问）
+        strong_keywords = [
+            "继续下钻", "按", "分别看", "换个维度", "改成按",
+            "和", "对比", "同比", "环比", "对照", "比一下",
+            "为什么", "为何", "原因", "怎么回事",
+            "那", "呢", "怎么样", "另外",
+        ]
+        
+        # 追问弱信号（需结合短文本判断）
+        follow_up_starters = [
+            "继续", "那", "按", "换", "为什么", "原因",
+            "和", "对比", "同比", "环比",
+        ]
+        
+        prompt_stripped = prompt.strip()
+        
+        # 规则1: 短文本 + 强关键词
+        if len(prompt_stripped) <= 30:
+            for kw in strong_keywords:
+                if kw in prompt_stripped:
+                    return True
+        
+        # 规则2: 以特定追问模式开头
+        for starter in follow_up_starters:
+            if prompt_stripped.startswith(starter):
+                return True
+        
+        return False
+
+    def _is_confirmation(self, prompt: str) -> bool:
+        """
+        M4: 识别用户消息是否为对建议查询的确认（如「是」/「好的」）
+        
+        判断逻辑:
+        1. 消息很短（≤5字）
+        2. 包含确认关键词
+        """
+        prompt_stripped = prompt.strip()
+        if len(prompt_stripped) > 5:
+            return False
+        confirmation_keywords = ("1", "OK", "ok", "y", "Y", "yes", "Yes", "YES",
+                                 "确认", "执行", "开始", "是", "是的", "好的", "好", "可以")
+        for kw in confirmation_keywords:
+            if kw == prompt_stripped or kw in prompt_stripped:
+                return True
+        return False
+
     async def process(self, message):
         try:
             cbm = ChatbotMessage.from_dict(message.data)
+
+            # === 群聊拒绝：仅保留单聊（去掉本段即可重新开启群聊）===
+            conv_type = getattr(cbm, 'conversation_type', None)
+            if conv_type == '2' or str(conv_type) == '2':
+                logger.info(f"[GroupChat] 群聊消息已拒绝: conv_type={conv_type}, sender={getattr(cbm, 'sender_nick', '?')}")
+                try:
+                    self.reply_text("暂不支持群聊查询，请与我私聊提问 \U0001F60A", cbm)
+                except Exception as e:
+                    logger.warning(f"[GroupChat] 回复失败: {e}")
+                return AckMessage.STATUS_OK, 'ok'
+
+            # === 消息去重：防止钉钉超时重发 ===
+            msg_id = cbm.message_id
+            if _is_duplicate_msg(msg_id):
+                logger.warning(f"[Dedup] 重复消息已忽略: msg_id={msg_id}, sender={cbm.sender_nick}")
+                return AckMessage.STATUS_OK, 'ok'
+
             prompt = cbm.text.content.strip() if cbm.text else ""
 
             # ===== Phase 1: Smart routing - LangGraph Agent first, old bot fallback =====
@@ -491,10 +635,152 @@ class BotHandler(ChatbotHandler):
                         self.reply_text(f"⚠️ 您暂无数据查询权限，请联系管理员开通。\n\n您的ID: {sender_staff_id}\n请将此ID发送给管理员进行授权。", cbm)
                         return AckMessage.STATUS_OK, 'ok'
 
+                    sender_id = cbm.sender_id or sender_staff_id
+                    sender_nick = cbm.sender_nick or "用户"
+
+                    # === P2: 重置关键字 → 清除会话，快速返回 ===
+                    if prompt.strip() in ("重置", "清除记忆", "重新开始", "清空会话"):
+                        try:
+                            delete_session(sender_id)
+                            save_last_context(sender_id, None)
+                            _pending_suggestion_cache.pop(sender_id, None)
+                            chat_history.pop(sender_id, None)
+                            logger.info(f"[Reset] 用户重置会话: user={sender_id}")
+                        except Exception as e:
+                            logger.error(f"[Reset] 重置会话失败: {e}")
+                        self.reply_text("已重置会话记录，您可以重新开始提问~", cbm)
+                        return AckMessage.STATUS_OK, 'ok'
+
+                    # === P2: 反馈词识别 → 记录反馈，快速返回 ===
+                    _POSITIVE_FEEDBACK = ("👍", "有用", "好的")
+                    _NEGATIVE_FEEDBACK = ("👎", "没用", "不准确")
+                    if prompt.strip() in _POSITIVE_FEEDBACK + _NEGATIVE_FEEDBACK:
+                        try:
+                            feedback_type = "positive" if prompt.strip() in _POSITIVE_FEEDBACK else "negative"
+                            # 获取上一轮上下文用于反馈关联
+                            fb_context = get_last_context(sender_id)
+                            fb_query = fb_context.get('last_analysis', '')[:200] if fb_context else ''
+                            fb_analysis = fb_context.get('last_result_summary', '') if fb_context else ''
+                            feedback_loop.on_analysis_feedback(
+                                user_query=fb_query or prompt,
+                                analysis=fb_analysis,
+                                feedback=feedback_type
+                            )
+                            logger.info(f"[Feedback] 用户反馈已记录: user={sender_id}, type={feedback_type}")
+                        except Exception as e:
+                            logger.warning(f"[Feedback] 反馈记录失败(不影响回复): {e}")
+                        self.reply_text("感谢您的反馈，我们会持续优化~", cbm)
+                        return AckMessage.STATUS_OK, 'ok'
+
+                    # === M4: 确认词识别 → 若有待确认建议查询，替换prompt；否则友好提示 ===
+                    if self._is_confirmation(prompt):
+                        pending = get_pending_suggestion(sender_id)
+                        if pending:
+                            logger.info(f"[M4] 用户确认建议查询，替换 prompt: '{prompt}' → '{pending[:60]}'")
+                            prompt = pending
+                        else:
+                            logger.info(f"[M4] 用户确认词但无待确认建议(已过期): '{prompt}'")
+                            self.reply_text("之前的建议已过期，请重新描述您的问题，我来帮您查询~", cbm)
+                            return AckMessage.STATUS_OK, 'ok'
+
                     self.reply_text('📊 已收到，AI分析中，请稍候...', cbm)
-                    reply = await forward_to_langgraph(prompt, user_role=user_role)
+
+                    # M3: 追问识别 + 上下文加载（内存优先，PG持久化回退）
+                    last_context = None
+                    if self._is_follow_up(prompt):
+                        logger.info(f"[M3] 识别为追问: {prompt[:50]}")
+                        try:
+                            last_context = get_last_context(sender_id)
+                            if last_context:
+                                logger.info(f"[M3] 内存加载上下文成功: SQL={last_context.get('last_sql', '')[:80]}...")
+                            else:
+                                # 内存无缓存时，回退到PG持久化会话
+                                try:
+                                    stored = get_session(sender_id)
+                                    if stored:
+                                        plan_data, question = stored
+                                        if isinstance(plan_data, dict) and plan_data.get('last_sql'):
+                                            last_context = plan_data
+                                            logger.info(f"[M3] PG回退加载上下文成功: SQL={last_context.get('last_sql', '')[:80]}...")
+                                        else:
+                                            logger.info("[M3] PG会话非M3格式，作为新查询处理")
+                                    else:
+                                        logger.info("[M3] PG无会话记录，作为新查询处理")
+                                except Exception as pg_e:
+                                    logger.warning(f"[M3] PG回退加载失败: {pg_e}")
+                        except Exception as e:
+                            logger.warning(f"[M3] 加载上下文失败: {e}，作为新查询处理")
+
+                    result = await forward_to_langgraph(prompt, user_role=user_role, last_context=last_context)
+
+                    # 适配元组返回（向后兼容旧版字符串返回）
+                    if isinstance(result, tuple):
+                        reply, metadata = result
+                    else:
+                        reply, metadata = result, {}
+
                     if reply and not reply.startswith('Agent service'):
+                        # M3: 从reply中提取SQL并清理标记
+                        last_sql = ''
+                        if '<!--M3_SQL:' in reply:
+                            m3_match = re.search(r'<!--M3_SQL:(.+?)-->', reply)
+                            if m3_match:
+                                last_sql = m3_match.group(1)
+                                reply = reply.replace(m3_match.group(0), '').rstrip()
+
+                        # M3: 保存本轮上下文供下次追问使用（内存 + PG持久化双写）
+                        m3_context = {
+                            'last_sql': last_sql,
+                            'last_result_summary': reply[:200] if reply else '',
+                            'last_analysis': reply[:500] if reply else '',
+                        }
+                        try:
+                            save_last_context(sender_id, m3_context)
+                        except Exception as e:
+                            logger.warning(f"[M3] 内存保存上下文失败: {e}")
+                        # PG持久化：将M3上下文存入sessions表，进程重启后可恢复
+                        try:
+                            save_session(sender_id, sender_nick, m3_context, prompt)
+                        except Exception as e:
+                            logger.warning(f"[M3] PG持久化上下文失败(不影响主流程): {e}")
+
+                        # M4: 保存待确认建议查询（错误回复中包含「您是否想查询」时）
+                        suggested = metadata.get('suggested_query')
+                        if suggested:
+                            try:
+                                save_pending_suggestion(sender_id, suggested)
+                            except Exception as e:
+                                logger.warning(f"[M4] 保存建议查询失败: {e}")
+                        # M4-else: 成功查询后，清除旧的待确认建议
+                        elif not reply.startswith('⚠️'):
+                            _pending_suggestion_cache.pop(sender_id, None)
+
                         self.reply_text(reply, cbm)
+
+                        # 数据持久化：保存查询任务到 tasks 表
+                        try:
+                            plan_task = metadata.get('plan_task', {})
+                            query_result = metadata.get('query_result', {})
+                            analysis = metadata.get('analysis', '')
+
+                            has_result = query_result.get('success') or plan_task.get('direct_answer')
+                            if has_result or plan_task:
+                                task_results = [{
+                                    'total_rows': query_result.get('row_count', 0),
+                                    'success': query_result.get('success', False),
+                                    'sql_executed': query_result.get('sql_executed', ''),
+                                }]
+                                save_task_to_db(
+                                    user_id=sender_id,
+                                    user_name=sender_nick,
+                                    prompt=prompt,
+                                    plan=plan_task,
+                                    results=task_results
+                                )
+                                logger.info(f"[Bot] 任务已持久化: user={sender_nick}, intent={plan_task.get('intent', '?')}")
+                        except Exception as e:
+                            logger.warning(f"[Bot] 任务持久化失败(不影响回复): {e}")
+
                         return AckMessage.STATUS_OK, 'ok'
                 except Exception as e:
                     logger.info(f'Agent fallback to old bot: {e}')

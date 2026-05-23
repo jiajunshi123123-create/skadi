@@ -64,13 +64,14 @@ class PlanAgent:
             prompt = template
         return prompt
 
-    async def plan(self, user_query: str, user_role: dict = None) -> dict:
+    async def plan(self, user_query: str, user_role: dict = None, last_context: dict = None) -> dict:
         """
         接收用户查询，返回 PlanTask dict。
 
         Args:
             user_query: 用户的自然语言查询
             user_role: 用户角色信息字典（权限系统注入）
+            last_context: 上一轮查询上下文（追问场景支持）
 
         Returns:
             PlanTask字典，包含:
@@ -86,11 +87,54 @@ class PlanAgent:
             - suggestion: 建议
         """
         system_content = self.system_prompt
-        
+
+        # --- 历史经验检索：从自学习系统获取相关经验注入 prompt ---
+        history_context = ""
+        try:
+            from learning.feedback_loop import feedback_loop
+            context = feedback_loop.get_context_for_query(user_query)
+            if context:
+                parts = []
+                # 注入相似模式
+                if context.get('similar_patterns'):
+                    p = context['similar_patterns']
+                    parts.append(
+                        f"## 相似历史查询模式\n"
+                        f"- 关键词: {p.get('trigger_keywords', [])}\n"
+                        f"- 历史SQL: {p.get('common_sql', [''])[0][:300]}\n"
+                        f"- 成熟度: {p.get('maturity', 0)}"
+                    )
+                # 注入RAG知识
+                if context.get('rag_results'):
+                    rag_text = "\n".join(
+                        [r.get('content', '')[:200] for r in context['rag_results'][:2]]
+                    )
+                    parts.append(f"## 相关知识库条目\n{rag_text}")
+                # 注入近期教训
+                if context.get('recent_lessons'):
+                    lessons_text = "\n".join(
+                        [l.get('lesson_text', '')[:150] for l in context['recent_lessons'][:3]]
+                    )
+                    parts.append(f"## 历史教训\n{lessons_text}")
+                if parts:
+                    history_context = "\n\n".join(parts)
+                    logger.info(f"[PlanAgent] 注入历史经验上下文: {len(history_context)} 字符")
+        except Exception as e:
+            logger.warning(f"[PlanAgent] 获取历史经验失败（可选模块）: {e}")
+
+        # 追问场景：注入上一轮查询上下文
+        if last_context:
+            context_block = self._build_follow_up_context(last_context)
+            system_content = system_content + "\n\n" + context_block
+
         # L2: Prompt注入 - 将用户角色权限信息注入系统提示词
         if user_role and user_role.get('role_id') != 'admin':
             permission_context = self._build_permission_prompt(user_role)
             system_content = system_content + "\n\n" + permission_context
+
+        # 将历史经验追加到 system_content 末尾
+        if history_context:
+            system_content += f"\n\n# 历史经验参考（优先复用高成熟度模式的SQL）\n{history_context}"
 
         messages = [
             SystemMessage(content=system_content),
@@ -137,6 +181,34 @@ class PlanAgent:
             prompt += """- 禁止生成包含 user_id 或 uid 明细的SQL（聚合查询 COUNT(DISTINCT ...) 除外）
 """
         return prompt
+
+    def _build_follow_up_context(self, last_context: dict) -> str:
+        """
+        构建追问上下文块，注入到System Prompt中。
+
+        Args:
+            last_context: 上一轮查询上下文字典
+                - last_sql: 上一轮执行的SQL
+                - last_result_summary: 结果摘要
+                - last_analysis: 分析文本（前500字）
+
+        Returns:
+            格式化的上下文块字符串
+        """
+        last_sql = last_context.get('last_sql', 'N/A')
+        last_summary = last_context.get('last_result_summary', 'N/A')
+        last_analysis = last_context.get('last_analysis', '')
+        # 截断分析文本，避免上下文过长
+        if len(last_analysis) > 500:
+            last_analysis = last_analysis[:500] + "..."
+
+        return f"""【上一轮查询上下文】
+SQL: {last_sql}
+结果摘要: {last_summary}
+分析: {last_analysis}
+
+如果用户是在追问，请基于上一轮上下文生成新的查询计划。
+保留上一轮的时间范围和目标表（除非用户明确要求切换）。"""
 
     def _parse_plan_task(self, content: str) -> dict:
         """

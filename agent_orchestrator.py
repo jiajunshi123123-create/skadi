@@ -22,6 +22,17 @@ from agents.analysis_agent import AnalysisAgent
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# 启动时依赖验证
+# ============================================================
+try:
+    from tools.database_adapter import DatabaseAdapter
+    _db_adapter_available = True
+except ImportError:
+    _db_adapter_available = False
+    logger.warning("[STARTUP WARNING] DatabaseAdapter 导入失败，所有SQL查询将不可用！"
+                   "请检查 tools/database_adapter.py 和相关数据库驱动。")
+
+# ============================================================
 # State 定义
 # ============================================================
 
@@ -38,6 +49,7 @@ class AgentState(TypedDict):
     retry_count: int              # 重试计数
     start_time: float             # 开始时间
     last_context: Optional[dict]  # M3: 上一轮查询上下文
+    suggested_query: Optional[str]  # M4: 从错误建议中提取的待确认查询
 
 
 # ============================================================
@@ -61,6 +73,30 @@ async def plan_node(state: AgentState) -> dict:
     输出: state['plan_task'] 或 state['error']
     """
     logger.info(f"[Orchestrator] Plan Node 开始处理")
+
+    # --- 自学习缓存快速通道 ---
+    try:
+        from learning.feedback_loop import feedback_loop
+        context = feedback_loop.get_context_for_query(state['user_query'])
+        if context and context.get('similar_patterns'):
+            pattern = context['similar_patterns']
+            # 成熟度 >= 0.3 且出现次数 >= 3 时命中缓存
+            if pattern.get('maturity', 0) >= 0.3 and pattern.get('occurrence_count', 0) >= 3:
+                logger.info(f"[Orchestrator] 缓存命中 pattern={pattern.get('pattern_id','?')}, "
+                           f"maturity={pattern.get('maturity')}, count={pattern.get('occurrence_count')}")
+                cached_sql = pattern.get('common_sql', [''])[0]
+                if cached_sql:
+                    return {'plan_task': {
+                        'intent': f"cached_{pattern.get('pattern_id', 'unknown')}",
+                        'sql': cached_sql,
+                        'table': '',  # Query Agent 会自动处理
+                        'from_cache': True,
+                        'cache_maturity': pattern.get('maturity', 0),
+                    }}
+    except Exception as e:
+        logger.warning(f"[Orchestrator] 缓存检测失败，走正常流程: {e}")
+    # --- 结束缓存快速通道 ---
+
     try:
         user_role = state.get('user_role')
         last_context = state.get('last_context')  # M3: 获取上下文
@@ -75,7 +111,17 @@ async def plan_node(state: AgentState) -> dict:
             error_msg = plan_task.get('error', '计划生成失败')
             suggestion = plan_task.get('suggestion', '')
             full_error = f"{error_msg}\n{suggestion}" if suggestion else error_msg
-            return {'error': full_error}
+            
+            # M4: 从建议中提取「待确认查询」，供用户回复「是」时自动执行
+            suggested_query = None
+            if suggestion and '您是否想查询' in suggestion:
+                import re
+                m = re.search(r'您是否想查询[：:]\s*(.+?)[？?]?$', suggestion)
+                if m:
+                    suggested_query = m.group(1).strip()
+                    logger.info(f"[Orchestrator] 提取到建议查询: {suggested_query[:60]}")
+            
+            return {'error': full_error, 'suggested_query': suggested_query}
         
         logger.info(f"[Orchestrator] Plan 完成: {plan_task.get('intent', 'N/A')}")
         return {'plan_task': plan_task}
@@ -128,7 +174,8 @@ async def query_node(state: AgentState) -> dict:
         else:
             plan_task = state['plan_task']
 
-        result = await query_agent.execute(plan_task)
+        # 将 user_query 注入 plan_task，供 QueryAgent 自愈时记录 lesson
+        result = await query_agent.execute({**plan_task, 'user_query': state.get('user_query', '')})
         
         if not result.get('success'):
             error_msg = result.get('error', '查询执行失败')
@@ -201,13 +248,30 @@ async def format_output(state: AgentState) -> dict:
         # 触发自学习（失败不阻塞主流程）
         try:
             from learning.feedback_loop import feedback_loop
+            from learning.pattern_store import save_lesson
             query_result = state.get('query_result') or {}
+            user_query = state.get('user_query', '')
             feedback_loop.on_query_success(
-                user_query=state.get('user_query', ''),
+                user_query=user_query,
                 sql=query_result.get('sql_executed', ''),
                 result=query_result,
                 analysis=reply
             )
+            # 记录成功查询为最佳实践（写入 lessons 表）
+            if query_result.get('sql_executed') and user_query:
+                save_lesson(
+                    lesson_type='best_practice',
+                    original_query=user_query,
+                    problem=f"用户问题: {user_query}",
+                    solution=f"成功SQL: {query_result.get('sql_executed', '')}"
+                )
+            # 记录分析反馈（分析文本有实质内容时才写入，避免过度记录）
+            if user_query and len(reply) > 100:
+                feedback_loop.on_analysis_feedback(
+                    user_query=user_query,
+                    analysis=reply,
+                    feedback='auto_record'
+                )
         except Exception as e:
             logger.warning(f"[Orchestrator] 自学习回调异常忽略: {e}")
     else:
@@ -382,6 +446,7 @@ async def run_agent(user_query: str, user_role: dict = None, last_context: dict 
             'query_result': query_result,
             'analysis': result.get('analysis', ''),
             'user_query': user_query,
+            'suggested_query': result.get('suggested_query'),  # M4: 传递待确认查询
         }
         return reply, metadata
     
