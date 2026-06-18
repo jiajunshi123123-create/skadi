@@ -246,6 +246,82 @@ async def get_skill(name: str):
     })
 
 
+@app.post("/api/scan")
+async def scan_database():
+    """扫描数据库，生成 data_dictionary.yml"""
+    import json, asyncio
+    from tools.db_scanner import scan_database as do_scan
+
+    async def generate():
+        try:
+            yield f"event: status\ndata: {json.dumps({'phase': 'scanning', 'msg': '正在连接数据库...'}, ensure_ascii=False)}\n\n"
+            
+            from tools.database_adapter import DatabaseAdapter
+            db = DatabaseAdapter.create()
+            
+            yield f"event: status\ndata: {json.dumps({'phase': 'scanning', 'msg': '正在扫描表结构...'}, ensure_ascii=False)}\n\n"
+            
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, do_scan, db)
+            
+            if 'error' in data:
+                yield f"event: error\ndata: {json.dumps({'error': data['error']}, ensure_ascii=False)}\n\n"
+                return
+            
+            # Save to config/data_dictionary.yml
+            import yaml, os
+            config_dir = os.path.join(os.path.dirname(__file__), 'config')
+            os.makedirs(config_dir, exist_ok=True)
+            output_path = os.path.join(config_dir, 'data_dictionary.yml')
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(f"# Skadi Data Dictionary — 自动扫描生成\n")
+                f.write(f"# 扫描时间: {data.get('scanned_at', '')}\n")
+                f.write(f"# 数据库: {data['database']['name']}\n")
+                f.write(f"# 表数量: {data['table_count']}\n")
+                f.write(f"# role 默认为'未审核'，请根据业务需要调整\n")
+                f.write(f"# ===================================================================\n\n")
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            
+            table_count = data["table_count"]
+            done_msg = f"扫描完成，发现 {table_count} 张表，已保存到 config/data_dictionary.yml"
+            done_data = {"table_count": table_count, "path": "config/data_dictionary.yml", "msg": done_msg}
+            yield "event: done\ndata: " + json.dumps(done_data, ensure_ascii=False) + "\n\n"
+            
+        except Exception as e:
+            logger.error(f"[Web] 扫描失败: {e}")
+            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+# Check if data dictionary exists on startup
+@app.get("/api/dictionary-status")
+async def dictionary_status():
+    """检查 data_dictionary.yml 是否存在"""
+    import os
+    config_dir = os.path.join(os.path.dirname(__file__), 'config')
+    yml_path = os.path.join(config_dir, 'data_dictionary.yml')
+    example_path = os.path.join(config_dir, 'data_dictionary.example.yml')
+    
+    has_real = os.path.exists(yml_path)
+    is_example = False
+    if has_real:
+        with open(yml_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline()
+            is_example = 'Example' in first_line or 'your_database' in first_line
+    
+    return JSONResponse({
+        'has_dictionary': has_real,
+        'is_example': is_example,
+        'path': yml_path,
+    })
+
+
 @app.get("/health")
 async def health():
     """健康检查"""

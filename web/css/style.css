@@ -547,3 +547,53 @@ body {
     min-width: 60px;
     font-size: 10px;
 }
+
+/* ========== Scan Button ========== */
+.btn-scan-db {
+    background: rgba(16,185,129,0.12);
+    color: #34d399;
+    border: 1px solid rgba(52,211,153,0.3);
+    border-radius: var(--radius-sm);
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all var(--transition);
+    white-space: nowrap;
+    margin-right: 4px;
+}
+.btn-scan-db:hover { background: rgba(16,185,129,0.25); border-color: #34d399; }
+.btn-scan-db:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-scan-db.scanning { animation: scanPulse 1.5s infinite; }
+
+@keyframes scanPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ========== Scan Status ========== */
+.scan-status {
+    max-width: 860px;
+    width: 100%;
+    margin: 8px auto;
+    padding: 0 16px;
+}
+.scan-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: rgba(16,185,129,0.08);
+    border: 1px solid rgba(52,211,153,0.2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--success);
+}
+.scan-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(52,211,153,0.3);
+    border-top-color: var(--success);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

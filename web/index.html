@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI数据分析助手 | 武老师快答</title>
-    <link rel="stylesheet" href="/css/style.css?v=1781604535">
+    <link rel="stylesheet" href="/css/style.css?v=1781757498">
 </head>
 <body>
 
@@ -41,6 +41,7 @@
                 <span class="header-subtitle">武老师快答APP</span>
             </div>
             <div class="header-actions">
+                <button id="scan-db-btn" class="btn-scan-db" title="扫描数据库">🔍 扫描</button>
                 <span id="token-usage" class="token-indicator">--</span>
                 <button id="new-chat-header-btn" class="btn-new-chat" title="新建对话">+ 新对话</button>
             </div>
@@ -56,6 +57,12 @@
         </div>
 
         <!-- 对话区域 -->
+        <div id="scan-status" class="scan-status" style="display:none">
+            <div class="scan-status-bar">
+                <span class="scan-spinner"></span>
+                <span id="scan-status-text">正在扫描数据库...</span>
+            </div>
+        </div>
         <div id="chat-container" class="chat-container">
             <!-- 快捷提问标签 -->
             <div class="quick-tags" id="quick-tags">
@@ -95,6 +102,6 @@
 
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="/js/app.js?v=1781604535"></script>
+    <script src="/js/app.js?v=1781757498"></script>
 </body>
 </html>

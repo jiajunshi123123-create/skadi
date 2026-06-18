@@ -576,6 +576,73 @@ async function sendMessage() {
 // ============================================================
 // Event wiring
 // ============================================================
+
+// ============================================================
+// Database Scanner
+// ============================================================
+async function scanDatabase() {
+    var btn = document.getElementById("scan-db-btn");
+    var statusDiv = document.getElementById("scan-status");
+    var statusText = document.getElementById("scan-status-text");
+    if (!btn || !statusDiv || !statusText) return;
+    if (btn.disabled) return;
+    
+    btn.disabled = true;
+    btn.classList.add("scanning");
+    btn.textContent = "⏳ 扫描中...";
+    statusDiv.style.display = "block";
+    statusText.textContent = "正在连接数据库...";
+    
+    try {
+        var response = await fetch("/api/scan", { method: "POST" });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = "";
+        
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+            buffer += decoder.decode(result.value, { stream: true });
+            var events = buffer.split("\n\n");
+            buffer = events.pop() || "";
+            
+            for (var i = 0; i < events.length; i++) {
+                var block = events[i].trim();
+                if (!block) continue;
+                var lines = block.split("\n");
+                var eventType = "", eventData = "";
+                for (var j = 0; j < lines.length; j++) {
+                    if (lines[j].startsWith("event: ")) eventType = lines[j].slice(7).trim();
+                    else if (lines[j].startsWith("data: ")) eventData = lines[j].slice(6).trim();
+                }
+                if (!eventData) continue;
+                try {
+                    var data = JSON.parse(eventData);
+                    if (eventType === "status") {
+                        statusText.textContent = data.msg || data.phase;
+                    } else if (eventType === "done") {
+                        statusText.textContent = data.msg;
+                        statusDiv.style.borderColor = "rgba(52,211,153,0.5)";
+                        setTimeout(function() { statusDiv.style.display = "none"; }, 5000);
+                    } else if (eventType === "error") {
+                        statusText.textContent = "扫描失败: " + (data.error || "未知错误");
+                        statusDiv.style.color = "var(--error)";
+                    }
+                } catch(e) {}
+            }
+        }
+    } catch (error) {
+        statusText.textContent = "扫描失败: " + error.message;
+        console.error("Scan failed:", error);
+    } finally {
+        btn.disabled = false;
+        btn.classList.remove("scanning");
+        btn.textContent = "🔍 扫描";
+    }
+}
+
 function setupEventListeners() {
     var sb = document.getElementById("send-btn");
     var qi = document.getElementById("query-input");
@@ -603,6 +670,10 @@ function setupEventListeners() {
             switchToSession(newId);
         });
     }
+
+    var scanBtn = document.getElementById("scan-db-btn");
+    if (scanBtn) scanBtn.addEventListener("click", scanDatabase);
+
     if (st && ss) {
         st.addEventListener("click", function() { ss.classList.toggle("collapsed"); });
     }
