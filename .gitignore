@@ -1,15 +1,48 @@
-__pycache__/
-*.pyc
-*.pyo
+# ============================================================
+# 万唯数据平台 - Git 忽略规则
+# ============================================================
+
+# ---- 凭证与敏感信息 ----
+credentials.json
+*.pem
+*.key
 .env
-knowledge/chroma_db/
-chroma_db/
-logs/
-*.log
+.env.*
+!*.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# ---- IDE 与编辑器 ----
 .vscode/
 .idea/
 *.swp
 *.swo
-*.bak*
+*~
 .DS_Store
-auth-profiles.json
+Thumbs.db
+
+# ---- 日志与临时文件 ----
+*.log
+*.tmp
+*.temp
+*.bak
+tmp/
+temp_zip_extract/
+
+# ---- 数据导出 ----
+# 注意：query_result.csv 和 table_reference.json 已纳入版本管理
+# 如需忽略未来的导出文件，在此添加规则
+# data/table_reference.json  # 大文件(2.7MB)，如需免除版本控制请取消注释
+# data/fvs_extracted/        # FVS原始数据，如需免除版本控制请取消注释
+
+# ---- OS 文件 ----
+desktop.ini
+$RECYCLE.BIN/

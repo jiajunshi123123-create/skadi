@@ -1,10 +1,29 @@
 version: '3.8'
 
 services:
+  # ========== Web 前端服务（新增） ==========
+  web:
+    build: .
+    container_name: ai-data-web
+    env_file: .env
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+
+  # ========== 钉钉 Bot 服务 ==========
   agent:
     build: .
     container_name: ai-data-agent
     env_file: .env
+    command: python dingtalk_bot.py
     depends_on:
       postgres:
         condition: service_healthy

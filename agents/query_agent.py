@@ -18,6 +18,7 @@ from config.agent_config import (
     PROMPTS_DIR
 )
 from tools.database_adapter import DatabaseAdapter
+from utils.pre_sql_hook import pre_sql_hook, HookExitCode
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,21 @@ class QueryAgent:
         [历史] 旧实现通过 subprocess 调用 starrocks_query_safe.py，
         现已迁移为 DatabaseAdapter 直连方式，支持 MySQL/PG/StarRocks。
         """
+        # === P1-3: PreSQLUse Hook — SQL执行前校验 ===
+        hook_result = pre_sql_hook.validate(sql)
+        if hook_result.exit_code == HookExitCode.BLOCK:
+            logger.error(f"[QueryAgent] PreSQLHook 阻止执行: {hook_result.message}")
+            return {
+                'success': False,
+                'error': f"PreSQLHook校验失败: {hook_result.message}",
+                'cols': [], 'rows': [], 'row_count': 0
+            }
+        elif hook_result.exit_code == HookExitCode.WARN:
+            logger.warning(
+                f"[QueryAgent] PreSQLHook 警告({hook_result.checks_passed}P/{hook_result.checks_failed}F): "
+                f"{'; '.join(hook_result.warnings[:2])}"
+            )
+
         # 先做 EXPLAIN 预校验
         explain_result = self.db.explain(sql)
         if not explain_result['success']:

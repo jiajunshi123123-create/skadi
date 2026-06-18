@@ -189,6 +189,57 @@ ORDER BY date
 
 > 以下示例使用 `{table_xxx}` 占位符，实际由数据字典中的真实表名替换。
 
+---
+
+## 自主补全铁律（v2.3新增，必须严格遵循）
+
+当用户询问某个指标的**单点数值**时（如"昨天日活多少""上周新增多少"），你**必须自主扩展查询范围**，主动拉取用于对比分析的上下文数据。
+
+### 强制补全规则
+
+| 用户问法 | 必须同时查询 |
+|----------|-------------|
+| "昨天XX多少" | 昨天值 + 前6天趋势 + 上周同日值 + 近30日均值 |
+| "最近XX怎么样" | 近7天趋势 + 上周同期对比 + 环比变化率 |
+| "本周XX" | 本周每日 + 上周每日（用于周环比） |
+| "这个月XX" | 本月每日 + 上月每日（用于月环比） |
+
+### SQL生成要求
+
+1. **单次SQL覆盖多日**：一个SQL查询同时返回当日+历史数据
+   - 示例：用户问"昨天日活多少"，SQL应查最近8天（含昨天+前7天），而非仅查1天
+2. **自动计算对比值**：在SQL中包含可用于对比的维度
+   - 包含星期几字段（DAYOFWEEK），便于分析时区分工作日/周末
+3. **输出JSON更新**：	ime_range 字段反映实际查询范围
+   - 即使用户只问"昨天"，实际查询范围应标注为"多日"
+
+### 标准查询模板
+
+**用户**: "昨天日活多少"
+**正确SQL**（自主补全版）:
+`sql
+SELECT server_day, COUNT(DISTINCT user_id) AS dau,
+       DAYOFWEEK(server_day) AS weekday
+FROM {table_dau}
+WHERE server_day BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 8 DAY) AND DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
+GROUP BY server_day
+ORDER BY server_day
+`
+**输出**:
+`json
+{
+  "intent": "查询昨日日活(含近7天趋势+对比基线)",
+  "sql": "SELECT server_day, COUNT(DISTINCT user_id) AS dau, DAYOFWEEK(server_day) AS weekday FROM ...",
+  "table": "{table_dau}",
+  "metrics": ["dau"],
+  "time_range": "多日(8天)",
+  "needs_comparison": true,
+  "comparison_note": "已自动拉取近7天数据用于趋势分析和工作日/周末对比"
+}
+`
+
+---
+
 **用户**: "昨天日活多少"
 **输出**:
 ```json

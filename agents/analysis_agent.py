@@ -39,25 +39,100 @@ class AnalysisAgent:
         with open(prompt_path, 'r', encoding='utf-8') as f:
             return f.read()
 
-    async def analyze(self, user_query: str, query_result: dict) -> str:
+    def _detect_anomalies(self, query_result: dict) -> str:
+        """M1: Pre-detect obvious data anomalies before LLM analysis.
+        
+        Returns anomaly summary string, or empty string if clean.
+        """
+        if not query_result or not query_result.get('rows'):
+            return ""
+
+        rows = query_result.get('rows', [])
+        cols = query_result.get('cols', [])
+        row_count = query_result.get('row_count', len(rows))
+        anomalies = []
+
+        # 1. Empty result check
+        if row_count == 0:
+            return "⚠️ Query returned 0 rows — no data found for the specified conditions."
+
+        # 2. Very sparse data
+        if row_count < 3 and row_count > 0:
+            anomalies.append(f"- Data sparsity: only {row_count} rows returned")
+
+        # 3. Check for all-null columns
+        if cols and rows:
+            for col_idx, col_name in enumerate(cols):
+                all_null = all(
+                    row[col_idx] is None or str(row[col_idx]).strip() == ''
+                    for row in rows
+                    if isinstance(row, (list, tuple)) and col_idx < len(row)
+                )
+                if all_null:
+                    anomalies.append(f"- Column '{col_name}': all values are NULL")
+
+        # 4. Check for 0 or negative values in numeric columns
+        if cols and rows and len(rows) > 0:
+            sample_row = rows[0]
+            if isinstance(sample_row, (list, tuple)):
+                for col_idx, col_name in enumerate(cols):
+                    if col_idx >= len(sample_row):
+                        continue
+                    all_zero = all(
+                        isinstance(row[col_idx], (int, float)) and row[col_idx] == 0
+                        for row in rows
+                        if isinstance(row, (list, tuple)) and col_idx < len(row) and row[col_idx] is not None
+                    )
+                    if all_zero and len(rows) > 0:
+                        anomalies.append(f"- Column '{col_name}': all values are 0")
+
+        if anomalies:
+            return "Data quality concerns detected:\n" + "\n".join(anomalies)
+        return ""
+
+    async def analyze(
+        self,
+        user_query: str,
+        query_result: dict,
+        anomaly_summary: str = "",
+        inspection_context: str = "",
+        skills_context: str = ""
+    ) -> str:
         """
         分析查询结果，生成三段式回复。
 
         Args:
             user_query: 用户原始问题
             query_result: Query Agent返回的结果字典
+            anomaly_summary: 异常检测摘要（M1阶段）
+            inspection_context: 数据核查探查报告（Inspection Agent）
+            skills_context: 匹配的分析技能方法论指令
 
         Returns:
             格式化的分析文本（三段式：📊数据 → 📈分析 → 💡建议）
         """
-        context = self._build_context(user_query, query_result)
+        context = self._build_context(
+            user_query, query_result,
+            anomaly_summary=anomaly_summary,
+            inspection_context=inspection_context,
+            skills_context=skills_context
+        )
+
+        # 构建消息：系统提示 + 技能指令 + 核查报告 + 数据上下文
+        system_content = self.system_prompt
+        if skills_context:
+            system_content += f"\n\n{skills_context}"
 
         messages = [
-            SystemMessage(content=self.system_prompt),
+            SystemMessage(content=system_content),
             HumanMessage(content=context),
         ]
 
-        logger.info(f"[AnalysisAgent] 开始分析，数据行数: {query_result.get('row_count', 0)}")
+        logger.info(
+            f"[AnalysisAgent] 开始分析，数据行数: {query_result.get('row_count', 0)}"
+            f"，技能: {'有' if skills_context else '无'}"
+            f"，核查报告: {'有' if inspection_context else '无'}"
+        )
 
         try:
             response = await self.llm.ainvoke(messages)
@@ -68,11 +143,18 @@ class AnalysisAgent:
             logger.error(f"[AnalysisAgent] 分析失败: {e}")
             return self._fallback_analysis(query_result)
 
-    def _build_context(self, query: str, result: dict) -> str:
+    def _build_context(
+        self,
+        query: str,
+        result: dict,
+        anomaly_summary: str = "",
+        inspection_context: str = "",
+        skills_context: str = ""
+    ) -> str:
         """构建分析上下文，传递给LLM"""
         data_display = self._format_data(result)
 
-        return f"""用户问题：{query}
+        context = f"""用户问题：{query}
 
 查询结果：
 执行的SQL: {result.get('sql_executed', 'N/A')}
@@ -82,9 +164,20 @@ class AnalysisAgent:
 
 数据内容:
 {data_display}
+"""
 
-请按照分析三步法（📊数据概览 → 📈趋势分析 → 💡行动建议）进行深度分析。
-注意：基于实际数据分析，不要编造任何数字。"""
+        # 注入异常检测摘要
+        if anomaly_summary:
+            context += f"\n⚠️ 数据异常检测结果:\n{anomaly_summary}\n"
+
+        # 注入核查报告
+        if inspection_context:
+            context += f"\n{inspection_context}\n"
+
+        context += "\n请按照分析三步法（📊数据概览 → 📈趋势分析 → 💡行动建议）进行深度分析。"
+        context += "\n注意：基于实际数据分析，不要编造任何数字。"
+
+        return context
 
     def _format_data(self, result: dict) -> str:
         """格式化查询数据为可读文本"""

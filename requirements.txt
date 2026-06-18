@@ -3,6 +3,10 @@ langchain-openai>=0.1.0
 langgraph>=0.1.0
 python-dotenv>=1.0.0
 
+# Web Server (新增 - AI数据分析助手 Web 前端)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
 # Database Adapters
 pymysql>=1.1.0
 psycopg2-binary>=2.9.0
