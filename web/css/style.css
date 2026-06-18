@@ -550,18 +550,19 @@ body {
 
 /* ========== Scan Button ========== */
 .btn-scan-db {
-    background: rgba(16,185,129,0.12);
-    color: #34d399;
-    border: 1px solid rgba(52,211,153,0.3);
-    border-radius: var(--radius-sm);
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: 11px;
+    color: var(--success);
+    background: rgba(16,185,129,0.08);
+    border: 1px solid rgba(52,211,153,0.25);
+    border-radius: 14px;
     cursor: pointer;
     transition: all var(--transition);
     white-space: nowrap;
-    margin-right: 4px;
+    flex-shrink: 0;
+    margin-left: auto;
 }
-.btn-scan-db:hover { background: rgba(16,185,129,0.25); border-color: #34d399; }
+.btn-scan-db:hover { background: rgba(16,185,129,0.2); border-color: var(--success); }
 .btn-scan-db:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-scan-db.scanning { animation: scanPulse 1.5s infinite; }
 
