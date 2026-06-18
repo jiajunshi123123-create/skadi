@@ -1,369 +1,186 @@
-﻿# ===================================================================
-# Skadi Data Dictionary v2 — 基于业务分析卡片知识库
 # ===================================================================
-# 来源: cards/ (7张业务分析卡片)
-# 覆盖: 用户/留存/会员/图书/答疑/营收/广告 七大业务域
-# 42张已审核表，含数据源合约（必用/禁用/辅助）
+# Data Dictionary Configuration (Example)
+# ===================================================================
+# This file describes your database schema for the AI agent.
+#
+# HOW TO USE:
+#   1. Copy this file to `data_dictionary.yml` in the same directory.
+#   2. Edit the copy to match your real tables/fields.
+#   3. Restart the service so the new dictionary is picked up.
+#
+# The agent will load `data_dictionary.yml` if present; otherwise it
+# falls back to this example file. You can also override the path via
+# the DATA_DICTIONARY_PATH environment variable.
+# ===================================================================
 
 database:
-  type: starrocks
-  name: app_prod_db
+  type: mysql            # mysql / postgresql / starrocks
+  name: your_database
 
 tables:
-  # ===================================================================
-  # 1. 用户与日活
-  # ===================================================================
-  - name: dws_edu_ubb_bhv_app_daily_active_user
-    domain: 用户
-    role: 必用
-    description: "全平台日活(DAU)，3,163,455行。user_id + active_date"
-    partition_key: server_day
-    partition_type: DATE
-    has_today_data: true
+  # -----------------------------------------------------------------
+  # Table 1: New user registration (DATE partition, has today's data)
+  # -----------------------------------------------------------------
+  - name: table_new_users
+    description: "New user registration records"
+    partition_key: date
+    partition_type: DATE          # DATE or DATETIME
+    has_today_data: true          # Whether table contains today's data
     fields:
-      - name: server_day
+      - name: date
         type: DATE
-        description: "活跃日期"
+        description: "Registration date (partition key)"
       - name: user_id
         type: BIGINT
-        description: "用户ID"
-      - name: login_cnt
-        type: BIGINT
-        description: "登录次数"
+        description: "Unique user identifier"
+      - name: city
+        type: VARCHAR
+        description: "User city"
+      - name: province
+        type: VARCHAR
+        description: "User province"
     typical_queries:
-      - description: "最近7天DAU趋势"
+      - description: "Daily new users count (last 7 days)"
         sql: |
-          SELECT server_day, COUNT(DISTINCT user_id) AS dau
-          FROM dws_edu_ubb_bhv_app_daily_active_user
-          WHERE server_day BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) AND CURRENT_DATE()
-          GROUP BY server_day ORDER BY server_day
+          SELECT date, COUNT(DISTINCT user_id) AS new_users
+          FROM table_new_users
+          WHERE date BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+                         AND CURRENT_DATE()
+          GROUP BY date
+          ORDER BY date
     baseline:
-      daily_avg: 11700
-      weekday_avg: 7200
-      weekend_avg: 14000
-      monday_avg: 8240
-      description: "K12教育产品，30天均值约1.17万。周末(周六日)显著高于工作日(周一至周五~7200)。周一略高(8240)因周末回流。对比时使用同星期几基线而非全局均值。"
+      daily_avg: 10000
+      description: "Average daily new user registrations"
 
-  - name: ods_edu_ubb_usr_app_user_user
-    domain: 用户
-    role: 必用
-    description: "用户主表，2,521,620行。user_id + province + grade_id"
-    partition_key: created_time
+  # -----------------------------------------------------------------
+  # Table 2: Daily active user events (DATETIME partition, half-open)
+  # -----------------------------------------------------------------
+  - name: table_dau_events
+    description: "Daily active user events (use for DAU/active user queries)"
+    partition_key: dt_utc
+    partition_type: DATETIME
+    has_today_data: false
+    fields:
+      - name: dt_utc
+        type: DATETIME
+        description: "Event timestamp (partition key, use half-open interval)"
+      - name: user_id
+        type: VARCHAR
+        description: "User identifier"
+      - name: event_type
+        type: VARCHAR
+        description: "Event type code"
+      - name: event_value
+        type: INT
+        description: "Event value/count"
+    typical_queries:
+      - description: "DAU count for a single day"
+        sql: |
+          SELECT COUNT(DISTINCT user_id) AS dau
+          FROM table_dau_events
+          WHERE dt_utc >= '2026-01-01' AND dt_utc < '2026-01-02'
+    baseline:
+      daily_avg: 30000
+      description: "Average daily active users"
+
+  # -----------------------------------------------------------------
+  # Table 3: Core behavior daily aggregates
+  # -----------------------------------------------------------------
+  - name: table_core_behavior
+    description: "Core behavior aggregates (e.g. exercises, reading, check-ins)"
+    partition_key: dt_utc
+    partition_type: DATETIME
+    has_today_data: false
+    fields:
+      - name: dt_utc
+        type: DATETIME
+        description: "Date partition (DATETIME)"
+      - name: user_id
+        type: VARCHAR
+        description: "User identifier"
+      - name: event_cnt
+        type: BIGINT
+        description: "Event occurrence count"
+      - name: user_cnt
+        type: BIGINT
+        description: "User count"
+    typical_queries:
+      - description: "Core active user count"
+        sql: |
+          SELECT COUNT(DISTINCT user_id) AS core_active
+          FROM table_core_behavior
+          WHERE dt_utc >= '2026-01-01' AND dt_utc < '2026-01-02'
+
+  # -----------------------------------------------------------------
+  # Table 4: Product usage detail
+  # -----------------------------------------------------------------
+  - name: table_product_usage
+    description: "Product-level usage detail (one row per user per product per day)"
+    partition_key: dt
+    partition_type: DATETIME
+    has_today_data: false
+    fields:
+      - name: dt
+        type: DATETIME
+        description: "Date partition"
+      - name: uid
+        type: VARCHAR
+        description: "User id (note: this table uses `uid`, not `user_id`)"
+      - name: product_id
+        type: VARCHAR
+        description: "Product identifier"
+      - name: name
+        type: VARCHAR
+        description: "Product name (embedded in fact table, no JOIN required)"
+    typical_queries:
+      - description: "Top products by active users"
+        sql: |
+          SELECT product_id, name AS product_name,
+                 COUNT(DISTINCT uid) AS active_users
+          FROM table_product_usage
+          WHERE dt >= '{start_date}' AND dt < '{end_date}'
+          GROUP BY product_id, name
+          ORDER BY active_users DESC
+          LIMIT 20
+
+  # -----------------------------------------------------------------
+  # Table 5: Order records (DATETIME partition, has today's data)
+  # -----------------------------------------------------------------
+  - name: table_orders
+    description: "Product order records"
+    partition_key: created_at
     partition_type: DATETIME
     has_today_data: true
     fields:
+      - name: order_id
+        type: BIGINT
+        description: "Order ID"
       - name: user_id
         type: BIGINT
-        description: "用户唯一标识"
-      - name: province
-        type: VARCHAR
-        description: "省份"
-      - name: grade_id
-        type: INT
-        description: "年级ID"
-      - name: created_time
-        type: DATETIME
-        description: "注册时间"
-
-  - name: dwd_edu_mrg_usr_new_user
-    domain: 用户
-    role: 必用
-    description: "新增用户明细，2,521,620行。按日期+渠道分组"
-    partition_key: date
-    partition_type: DATE
-    has_today_data: true
-    fields:
-      - name: user_id
-        type: BIGINT
-        description: "用户ID"
-      - name: date
-        type: DATE
-        description: "注册日期"
-      - name: province
-        type: VARCHAR
-        description: "省份"
-      - name: city
-        type: VARCHAR
-        description: "城市"
-    typical_queries:
-      - description: "最近7天新增趋势"
-        sql: |
-          SELECT date, COUNT(DISTINCT user_id) AS new_users
-          FROM dwd_edu_mrg_usr_new_user
-          WHERE date BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) AND CURRENT_DATE()
-          GROUP BY date ORDER BY date
-
-  - name: dws_edu_ubb_usr_app_province
-    domain: 用户
-    role: 辅助
-    description: "省份用户汇总，仅44行"
-    fields:
-      - name: province
-        type: VARCHAR
-      - name: user_count
-        type: BIGINT
-
-  - name: dws_edu_bhv_user_device_type_daily
-    domain: 用户
-    role: 辅助
-    description: "用户设备类型日统计，5,180,000行"
-
-  # ===================================================================
-  # 2. 用户留存与流失
-  # ===================================================================
-  - name: ads_app_user_lost_cycle
-    domain: 留存
-    role: 必用
-    description: "用户流失分析(优先使用)，1,900,000行。已预计算流失周期"
-    fields:
-      - name: user_id
-        type: BIGINT
-      - name: last_active_date
-        type: DATE
-      - name: lost_cycle
-        type: VARCHAR
-
-  - name: ads_edu_tifen_active_user_lost_cycle
-    domain: 留存
-    role: 辅助
-    description: "提分智教用户流失分析，90,928行"
-
-  - name: dws_edu_tifen_user_active_lifecycle_daily
-    domain: 留存
-    role: 辅助
-    description: "提分智教用户生命周期日表"
-
-  - name: dws_edu_qna_user_retention_daily
-    domain: 留存
-    role: 辅助
-    description: "答疑用户留存，3,060,000行"
-
-  # ===================================================================
-  # 3. 提分智教会员
-  # ===================================================================
-  - name: dwd_edu_ubb_usr_tifen_member
-    domain: 会员
-    role: 必用
-    description: "提分智教会员明细(DWD)。user_id + member_type + start_date + end_date"
-    fields:
-      - name: user_id
-        type: BIGINT
-      - name: member_type
-        type: VARCHAR
-        description: "会员类型"
-      - name: start_date
-        type: DATE
-        description: "会员开始日期"
-      - name: end_date
-        type: DATE
-        description: "会员到期日期"
-    typical_queries:
-      - description: "当前有效会员数"
-        sql: |
-          SELECT COUNT(DISTINCT user_id) AS current_members
-          FROM dwd_edu_ubb_usr_tifen_member
-          WHERE end_date >= CURDATE()
-
-  - name: dws_edu_ubb_member_active_m
-    domain: 会员
-    role: 辅助
-    description: "会员月活跃，仅19行"
-
-  - name: dws_edu_learning_progress_summary_d
-    domain: 会员
-    role: 辅助
-    description: "学习进度汇总，4,350,000行"
-
-  - name: dwd_edu_tifen_zbk_learning_progress
-    domain: 会员
-    role: 辅助
-    description: "中考帮学习进度，780,000行"
-
-  - name: dwd_edu_tifen_app_exam_paper
-    domain: 会员
-    role: 辅助
-    description: "试卷使用记录，510,000行"
-
-  - name: ods_edu_ubb_mkt_homework_prod_member_change
-    domain: 会员
-    role: 辅助
-    description: "会员变更流水"
-
-  # ===================================================================
-  # 4. 图书激活
-  # ===================================================================
-  - name: ods_edu_ubb_bhv_homework_prod_books_user
-    domain: 图书
-    role: 必用
-    description: "用户图书激活，4,120,000行。books_id + yid(用户) + is_start_rights"
-    fields:
-      - name: books_id
-        type: BIGINT
-        description: "图书ID"
-      - name: yid
-        type: VARCHAR
-        description: "用户标识(注意:不是user_id)"
-      - name: is_start_rights
-        type: TINYINT
-        description: "权益是否激活(1=已激活)"
-      - name: create_time
-        type: DATETIME
-        description: "激活时间"
-
-  - name: ods_edu_ubb_smt_homework_prod_books
-    domain: 图书
-    role: 必用
-    description: "图书主表。id + name + grade_name + study_stage_name"
-
-  - name: ods_edu_ubb_ord_homework_prod_books_activation_code
-    domain: 图书
-    role: 辅助
-    description: "激活码明细，110,000,000行"
-
-  - name: dws_edu_ubb_bhv_user_book_funnel_status
-    domain: 图书
-    role: 辅助
-    description: "图书转化漏斗(DWS汇总)"
-
-  - name: dwd_edu_mrg_bhv_books_user_detail
-    domain: 图书
-    role: 辅助
-    description: "图书用户明细宽表"
-
-  - name: dws_edu_ubb_bhv_book_right_usernum
-    domain: 图书
-    role: 禁用
-    description: "⚠️ 权益汇总表，仅1行！不可按series拆分"
-
-  # ===================================================================
-  # 5. 答疑
-  # ===================================================================
-  - name: dwd_edu_bhv_manual_answer_session_combined
-    domain: 答疑
-    role: 必用
-    description: "答疑会话宽表(优先使用，替代ODS)。user_id + session_id + duration"
-    fields:
-      - name: user_id
-        type: BIGINT
-      - name: session_id
-        type: VARCHAR
-        description: "会话ID"
-      - name: create_time
-        type: DATETIME
-      - name: duration
-        type: INT
-        description: "会话时长"
-
-  - name: dwd_edu_ubb_ord_answer_purchase_detail
-    domain: 答疑
-    role: 必用
-    description: "答疑购买明细。user_id + order_no + amount"
-
-  - name: dwd_edu_ubb_ord_answer_refund_detail
-    domain: 答疑
-    role: 辅助
-    description: "答疑退款明细(含user_id，与通用退款表不同)"
-
-  - name: dws_edu_ubb_answer_pay_path_detail
-    domain: 答疑
-    role: 辅助
-    description: "答疑付费路径。user_id + pay_path + step"
-
-  - name: dws_edu_dayi_user_login_daily_stats
-    domain: 答疑
-    role: 辅助
-    description: "答疑用户登录日统计"
-
-  # ===================================================================
-  # 6. 营收
-  # ===================================================================
-  - name: dws_edu_mrg_mkt_revenue_day_wide
-    domain: 营收
-    role: 必用
-    description: "收入统计日表。d_date + project_name + total_income(推荐使用)"
-
-  - name: dwd_edu_mrg_mkt_order_date
-    domain: 营收
-    role: 必用
-    description: "订单宽表(核心)。user_id + order_no + amount + order_date + project_name"
-    fields:
-      - name: user_id
-        type: BIGINT
-      - name: order_no
-        type: VARCHAR
-        description: "订单号(可用于JOIN退款表)"
+        description: "User who placed the order"
       - name: amount
         type: DECIMAL
-      - name: order_date
-        type: DATE
-      - name: project_name
+        description: "Order amount"
+      - name: status
         type: VARCHAR
+        description: "Order status (paid/pending/cancelled)"
+      - name: created_at
+        type: DATETIME
+        description: "Order creation time (partition key)"
 
-  - name: dwd_edu_mrg_mkt_goods_refund_order
-    domain: 营收
-    role: 必用
-    description: "⚠️ 退款明细(无user_id列)。含order_no + refund_amount，需JOIN dwd_edu_mrg_mkt_order_date ON order_no获取user_id"
-    fields:
-      - name: order_no
-        type: VARCHAR
-        description: "订单号(JOIN键)"
-      - name: refund_amount
-        type: DECIMAL
-      - name: refund_date
-        type: DATE
+# -------------------------------------------------------------------
+# Global query rules - injected as 查询规则 section in the prompt.
+# Each top-level key becomes a sub-heading; each list item is a bullet.
+# -------------------------------------------------------------------
+rules:
+  date_handling:
+    - "DATE type fields: use BETWEEN with CURRENT_DATE() as upper bound (inclusive of today)"
+    - "DATETIME type fields: use half-open interval `>= start AND < end`"
+    - "Never wrap a DATE-type field with the DATE() function"
+    - "For tables with has_today_data=true, the upper bound should include today"
 
-  - name: dwd_edu_mrg_mkt_goods_order
-    domain: 营收
-    role: 辅助
-    description: "商品订单明细，29,850行"
-
-  - name: dws_edu_ubb_usr_consume_stats
-    domain: 营收
-    role: 辅助
-    description: "用户消费统计"
-
-  # ===================================================================
-  # 7. 广告
-  # ===================================================================
-  - name: dws_edu_mkt_ad_position_effect_daily
-    domain: 广告
-    role: 必用
-    description: "广告位效果日表(优先使用)。ad_position_id + exposure + click + d_date"
-
-  - name: dwd_edu_bhv_maidian_user_event_marketing_daily
-    domain: 广告
-    role: 必用
-    description: "营销事件日表(DWD)。user_id + event_type + element_value"
-
-  - name: dwd_edu_bhv_maidian_ad_click_daily
-    domain: 广告
-    role: 辅助
-    description: "广告点击日表，9,042行"
-
-  - name: ods_edu_ubb_mkt_app_common_ad_info_config
-    domain: 广告
-    role: 辅助
-    description: "广告配置表(广告位名称映射)"
-
-# ===================================================================
-# 关键业务规则 (从卡片提取)
-# ===================================================================
-business_rules:
-  - rule: "退款表无user_id"
-    detail: "dwd_edu_mrg_mkt_goods_refund_order 无user_id列。按用户分析退款需 JOIN dwd_edu_mrg_mkt_order_date ON order_no"
-    severity: critical
-  - rule: "图书用户标识非user_id"
-    detail: "ods_edu_ubb_bhv_homework_prod_books_user 的用户列名为 yid，不是 user_id"
-    severity: warning
-  - rule: "权益汇总表不可拆分"
-    detail: "dws_edu_ubb_bhv_book_right_usernum 仅1行汇总数据，不可按系列/时间拆分。用 ods_edu_ubb_bhv_homework_prod_books_user 替代(412万行)"
-    severity: critical
-  - rule: "优先用DWD宽表而非ODS原始表"
-    detail: "答疑分析优先用 dwd_edu_bhv_manual_answer_session_combined，而非 ods_edu_ubb_bhv_app_answer_question_t_session_message(214万行ODS)"
-    severity: info
-  - rule: "用户流失用预计算表"
-    detail: "优先使用 ads_app_user_lost_cycle(190万行)，已预计算流失周期"
-    severity: info
-  - rule: "年级用grade_name"
-    detail: "仅从 grade_name 获取。'小升初'等效'六年级' → IN ('六年级','小升初')"
-    severity: info
+  sql_safety:
+    - "Only SELECT statements are allowed (no INSERT/UPDATE/DELETE/DROP)"
+    - "Always include the partition key in the WHERE clause to avoid full scans"
+    - "Use COUNT(DISTINCT user_id) for unique user counts, not COUNT(*)"
+    - "Query time range must not exceed 90 days"
