@@ -115,7 +115,7 @@ class MemoryConsolidator:
         stored_count = 0
         for mem in memories:
             try:
-                # ??????
+                # 根据记忆内容和来源推断统一记忆类型
                 memory_type = infer_memory_type(
                     content=mem['insight'],
                     source='consolidator',
@@ -207,38 +207,38 @@ class MemoryConsolidator:
         }
 
     def _should_save(self, memory: dict) -> bool:
-        """??????????????????????
+        """判断候选记忆是否值得长期保存。
 
-        ?? WHAT_NOT_TO_SAVE ????:
-        - ?????????
-        - ??/?????????????
-        - ?????????/commit??
-        - ?? AGENTS.md ????
+        遵循 WHAT_NOT_TO_SAVE 排除规则：
+        - 不保存代码模式、架构信息和文件路径
+        - 不保存 Git 历史、调试方案或修复配方
+        - 不保存临时任务状态和对话中间过程
+        - 不重复保存 AGENTS.md 或 CLAUDE.md 已记录的内容
 
         Returns:
-            True ??????
+            True 表示允许保存。
         """
         insight = memory.get('insight', '')
         query = memory.get('query', '')
         combined = (insight + query).lower()
 
-        # ????
+        # 排除可从代码、Git 或当前会话直接推导的内容
         skip_patterns = [
-            # ??/????
-            (['import ', 'class ', 'def ', 'function'], '????'),
-            (['??', 'architecture', '????'], '????'),
-            # ????
-            (['bug', 'fix', '??', '??'], '????'),
-            (['commit', 'branch', 'merge'], 'git??'),
-            # ????
-            (['????', '???', '???', 'todo'], '????'),
-            (['????', '????'], '????'),
+            # 代码和架构信息
+            (['import ', 'class ', 'def ', 'function'], '代码实现'),
+            (['文件路径', 'architecture', '架构信息'], '架构信息'),
+            # 调试和 Git 历史
+            (['bug', 'fix', '修复方案', '调试方案'], '调试方案'),
+            (['commit', 'branch', 'merge'], 'Git历史'),
+            # 临时状态和已有规范
+            (['进行中', '处理中', '临时任务', 'todo'], '临时状态'),
+            (['agents.md', 'claude.md'], '已有规范'),
         ]
 
         for keywords, reason in skip_patterns:
             if any(kw in combined for kw in keywords):
                 logger.debug(
-                    f"[MemoryConsolidator] ???? (??: {reason}): "
+                    f"[MemoryConsolidator] 跳过记忆（原因: {reason}）: "
                     f"{insight[:80]}"
                 )
                 return False

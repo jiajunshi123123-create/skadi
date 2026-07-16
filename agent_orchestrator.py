@@ -31,7 +31,7 @@ from analysis_task import (
     create_tasks_from_plan, update_task_status, format_task_progress,
     TaskStatus, get_all_tasks,
 )
-import learning.memory_tools  # ???????ToolRegistry
+import learning.memory_tools  # 注册记忆工具到 ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +148,8 @@ async def plan_node(state: AgentState) -> dict:
 
 
 async def analysis_plan_node(state: AgentState) -> dict:
-    """??????: ????? + ?????? + ????"""
-    logger.info("[Orchestrator] Analysis Plan Node ??????")
+    """分析规划节点：识别问题类型、匹配分析方法并声明数据缺口。"""
+    logger.info("[Orchestrator] Analysis Plan Node 开始规划")
     try:
         from config.data_dictionary_loader import get_data_dictionary_prompt
         data_dict_text = get_data_dictionary_prompt()
@@ -183,26 +183,26 @@ async def analysis_plan_node(state: AgentState) -> dict:
             return {
                 'analysis_plan': plan_dict,
                 'error': (
-                    f"??????: ????????\n"
-                    f"????: {plan.summary}\n"
-                    f"????: {gap_summary}"
+                    f"无法执行分析：缺少必要数据\n"
+                    f"分析计划：{plan.summary}\n"
+                    f"数据缺口：{gap_summary}"
                 ),
             }
         logger.info(
-            f"[Orchestrator] ??????: {len(plan.executable_methods)}???, "
-            f"{len(plan.blocked_methods)}??, {len(plan.data_gaps)}????"
+            f"[Orchestrator] 分析规划完成: {len(plan.executable_methods)}项可执行, "
+            f"{len(plan.blocked_methods)}项受阻, {len(plan.data_gaps)}个数据缺口"
         )
 
-        # ????????
+        # 根据分析计划创建可跟踪任务
         try:
             tasks = create_tasks_from_plan(plan_dict)
-            logger.info(f"[Orchestrator] ?? {len(tasks)} ?????")
+            logger.info(f"[Orchestrator] 已创建 {len(tasks)} 个分析任务")
         except Exception as e:
-            logger.warning(f"[Orchestrator] ???????????: {e}")
+            logger.warning(f"[Orchestrator] 创建分析任务失败，不影响主流程: {e}")
 
         return {'analysis_plan': plan_dict}
     except Exception as e:
-        logger.error(f"[Orchestrator] Analysis Plan Node ??: {e}")
+        logger.error(f"[Orchestrator] Analysis Plan Node 异常: {e}")
         return {'analysis_plan': None}
 
 
@@ -431,19 +431,19 @@ async def format_output(state: AgentState) -> dict:
         )
     elif state.get('analysis'):
         reply = state['analysis']
-        # ????????
+        # 在分析结果前补充本次采用的方法和数据缺口
         analysis_plan = state.get('analysis_plan')
         if analysis_plan and analysis_plan.get('executable_methods'):
             methods_names = [m['name'] for m in analysis_plan['executable_methods']]
             reply = (
-                f"?? ????: {' ? '.join(methods_names)}\n"
-                f"????????????????\n"
+                f"🧭 分析方法: {' → '.join(methods_names)}\n"
+                f"━━━━━━━━━━━━━━━━\n"
                 f"{reply}"
             )
             if analysis_plan.get('data_gaps'):
                 gaps = analysis_plan['data_gaps']
                 gap_text = '; '.join(g['field'] for g in gaps[:3])
-                reply += f"\n\n?? ????: {gap_text}"
+                reply += f"\n\n⚠️ 数据缺口: {gap_text}"
         # 触发自学习（失败不阻塞主流程）
         try:
             from learning.feedback_loop import feedback_loop
@@ -572,7 +572,7 @@ def build_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
     # 添加节点
-    workflow.add_node('analysis_plan', analysis_plan_node)  # ???????
+    workflow.add_node('analysis_plan', analysis_plan_node)  # 分析方法规划
     workflow.add_node('plan', plan_node)
     workflow.add_node('query', query_node)
     workflow.add_node('inspection', inspection_node)  # 新增：数据核查
@@ -582,7 +582,7 @@ def build_graph() -> StateGraph:
 
     # 设置入口
     workflow.set_entry_point('analysis_plan')
-    workflow.add_edge('analysis_plan', 'plan')  # ?????????
+    workflow.add_edge('analysis_plan', 'plan')  # 分析规划完成后生成查询计划
 
 
     # 条件路由: plan → query 或 direct_answer 或 format_output
