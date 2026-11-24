@@ -16,6 +16,8 @@ import asyncio
 from agent_forward import forward_to_langgraph  # 改造: 使用 LangGraph 编排器
 from session_store_pg import save_session, get_session, delete_session
 from learning.feedback_loop import feedback_loop
+from tools.database_adapter import apply_mysql_readonly_session
+from utils.sql_safety import check_readonly_sql
 
 # Load .env manually (systemd truncates at # in values)
 def _load_env(path=os.environ.get("ENV_FILE", "/opt/workspace/.env")):
@@ -137,9 +139,13 @@ SR = {
 MAX_ROWS = 5000  # Safety limit (P2 fix)
 
 def run_sql(sql):
+    err = check_readonly_sql(sql, allow_metadata=True)
+    if err:
+        raise ValueError(err)
     conn = pymysql.connect(**SR, charset='utf8mb4', connect_timeout=10, read_timeout=30)
     cur = conn.cursor()
     try:
+        apply_mysql_readonly_session(cur)
         cur.execute(sql)
         rows = cur.fetchmany(MAX_ROWS)  # fetchmany instead of fetchall
         cols = [d[0] for d in cur.description]
@@ -159,6 +165,7 @@ def verify_step(sql):
     try:
         conn = pymysql.connect(**SR, charset='utf8mb4', connect_timeout=5, read_timeout=10)
         cur = conn.cursor()
+        apply_mysql_readonly_session(cur)
         cur.execute(verify_sql)
         row = cur.fetchone()
         cnt = row[0] if row else 0
@@ -172,23 +179,22 @@ def verify_step(sql):
         return False, f"验证失败: {str(e)[:100]}"
 
 
-# SQL security patterns (P2 fix)
-FORBIDDEN_SQL = re.compile(
-    r'(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|LOAD|IMPORT)',
-    re.IGNORECASE
-)
-MULTI_SEMICOLON = re.compile(r';\s*\w', re.IGNORECASE)
-
 def validate_sql(sql):
-    """Validate and extract safe SQL. Returns (cleaned_sql, error_msg)."""
-    if FORBIDDEN_SQL.search(sql):
-        return None, "SQL包含禁止的关键字 (INSERT/UPDATE/DELETE/DROP/ALTER等)"
-    if MULTI_SEMICOLON.search(sql):
-        return None, "不支持多语句SQL"
-    m = re.search(r'(SELECT|SHOW|DESCRIBE)\s[\s\S]*', sql, re.IGNORECASE)
-    if not m:
-        return None, "仅支持SELECT/SHOW/DESCRIBE查询语句"
-    return m.group(0).rstrip(';').strip(), None
+    """Validate and extract one read-only statement. Returns (cleaned_sql, error_msg)."""
+    if not sql or not str(sql).strip():
+        return None, "SQL为空"
+    match = re.search(
+        r'(WITH|EXPLAIN|SELECT|SHOW|DESCRIBE|DESC)\b[\s\S]*',
+        str(sql),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, "仅支持 SELECT/WITH/EXPLAIN 查询语句"
+    cleaned = match.group(0).strip()
+    err = check_readonly_sql(cleaned, allow_metadata=True)
+    if err:
+        return None, err
+    return cleaned.rstrip(';').strip(), None
 
 def execute_plan(plan):
     results = []

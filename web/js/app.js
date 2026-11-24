@@ -74,6 +74,58 @@ var state = {
 };
 
 // ============================================================
+// API auth (sessionStorage only; the server rejects missing keys)
+// ============================================================
+var ApiAuth = {
+    KEY: "skadi_api_key",
+    ADMIN_KEY: "skadi_admin_key",
+    getKey: function() { return sessionStorage.getItem(this.KEY) || ""; },
+    getAdminKey: function() { return sessionStorage.getItem(this.ADMIN_KEY) || ""; },
+    setKeys: function(key, adminKey) {
+        if (key) sessionStorage.setItem(this.KEY, key);
+        else sessionStorage.removeItem(this.KEY);
+        if (adminKey) sessionStorage.setItem(this.ADMIN_KEY, adminKey);
+        else sessionStorage.removeItem(this.ADMIN_KEY);
+    },
+    headers: function(extra) {
+        var headers = extra || {};
+        var key = this.getKey();
+        if (key) headers["X-API-Key"] = key;
+        return headers;
+    },
+    adminHeaders: function() {
+        var headers = { "X-Admin-Key": this.getAdminKey() };
+        return headers;
+    }
+};
+
+function openAuthModal(message) {
+    var modal = document.getElementById("auth-modal");
+    var note = document.getElementById("auth-modal-message");
+    var keyInput = document.getElementById("api-key-input");
+    var adminInput = document.getElementById("admin-key-input");
+    if (!modal || !keyInput || !adminInput) return;
+    if (note && message) note.textContent = message;
+    keyInput.value = ApiAuth.getKey();
+    adminInput.value = ApiAuth.getAdminKey();
+    modal.style.display = "flex";
+    keyInput.focus();
+}
+
+function closeAuthModal() {
+    var modal = document.getElementById("auth-modal");
+    if (modal) modal.style.display = "none";
+}
+
+async function readErrorMessage(response) {
+    try {
+        var data = await response.json();
+        if (data && data.error) return data.error;
+    } catch (e) {}
+    return "HTTP " + response.status;
+}
+
+// ============================================================
 // Utilities (defined first)
 // ============================================================
 function escapeHtml(text) {
@@ -455,6 +507,10 @@ async function sendMessage() {
     if (!qi || !sb || state.isProcessing) return;
     var query = qi.value.trim();
     if (!query) return;
+    if (!ApiAuth.getKey()) {
+        openAuthModal("请先填写 API Key。服务端会拒绝未认证的请求。");
+        return;
+    }
 
     state.isProcessing = true;
     sb.disabled = true;
@@ -471,10 +527,14 @@ async function sendMessage() {
     try {
         var response = await fetch("/api/chat", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: ApiAuth.headers({ "Content-Type": "application/json" }),
             body: JSON.stringify({ query: query, session_id: state.sessionId })
         });
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        if (!response.ok) {
+            var chatError = await readErrorMessage(response);
+            if (response.status === 401 || response.status === 503) openAuthModal(chatError);
+            throw new Error(chatError);
+        }
 
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
@@ -587,6 +647,11 @@ async function scanDatabase() {
     if (!btn || !statusDiv || !statusText) return;
     if (btn.disabled) return;
     
+    if (!ApiAuth.getAdminKey()) {
+        openAuthModal("扫描数据库需要单独的 Admin Key（WEB_ADMIN_API_KEY）。");
+        return;
+    }
+
     btn.disabled = true;
     btn.classList.add("scanning");
     btn.textContent = "⏳ 扫描中...";
@@ -594,8 +659,12 @@ async function scanDatabase() {
     statusText.textContent = "正在连接数据库...";
     
     try {
-        var response = await fetch("/api/scan", { method: "POST" });
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        var response = await fetch("/api/scan", { method: "POST", headers: ApiAuth.adminHeaders() });
+        if (!response.ok) {
+            var scanError = await readErrorMessage(response);
+            if (response.status === 401 || response.status === 503) openAuthModal(scanError);
+            throw new Error(scanError);
+        }
         
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
@@ -674,6 +743,22 @@ function setupEventListeners() {
     var scanBtn = document.getElementById("scan-db-btn");
     if (scanBtn) scanBtn.addEventListener("click", scanDatabase);
 
+    var apiKeyBtn = document.getElementById("api-key-btn");
+    if (apiKeyBtn) apiKeyBtn.addEventListener("click", function() { openAuthModal("更新 API Key。密钥只保存在当前标签页。"); });
+    var authForm = document.getElementById("auth-form");
+    if (authForm) {
+        authForm.addEventListener("submit", function(e) {
+            e.preventDefault();
+            var keyInput = document.getElementById("api-key-input");
+            var adminInput = document.getElementById("admin-key-input");
+            ApiAuth.setKeys(keyInput ? keyInput.value.trim() : "", adminInput ? adminInput.value.trim() : "");
+            closeAuthModal();
+            loadSkills();
+        });
+    }
+    var authCancel = document.getElementById("auth-cancel-btn");
+    if (authCancel) authCancel.addEventListener("click", closeAuthModal);
+
     if (st && ss) {
         st.addEventListener("click", function() { ss.classList.toggle("collapsed"); });
     }
@@ -700,6 +785,21 @@ function setupEventListeners() {
     }
 }
 
+async function loadSkills() {
+    if (!ApiAuth.getKey()) return;
+    try {
+        var skillsResp = await fetch("/api/skills", { headers: ApiAuth.headers() });
+        if (skillsResp.ok) {
+            var skillsData = await skillsResp.json();
+            state.skills = skillsData.skills || [];
+        } else if (skillsResp.status === 401 || skillsResp.status === 503) {
+            openAuthModal(await readErrorMessage(skillsResp));
+        }
+    } catch (e) {
+        console.warn("Skills load failed:", e);
+    }
+}
+
 // ============================================================
 // Init
 // ============================================================
@@ -711,15 +811,12 @@ async function init() {
     try {
         state.sessionId = SessionManager.getCurrentId();
         renderSkillsEmpty();
-        // Load skills catalog
-        try {
-            var skillsResp = await fetch("/api/skills");
-            if (skillsResp.ok) {
-                var skillsData = await skillsResp.json();
-                state.skills = skillsData.skills || [];
-            }
-        } catch(e) { console.warn("Skills load failed:", e); }
         setupEventListeners();
+        if (!ApiAuth.getKey()) {
+            openAuthModal("请填写 API Key。未认证时聊天和技能接口都会被拒绝。");
+        } else {
+            loadSkills();
+        }
         renderSessions();
         loadCurrentSessionMessages();
         updateTokenIndicator(0);

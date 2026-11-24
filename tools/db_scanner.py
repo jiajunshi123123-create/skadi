@@ -109,7 +109,7 @@ def scan_database(db_adapter) -> dict:
     # 1. 获取所有表
     db_type = os.getenv("DB_TYPE", "mysql").lower()
     if db_type in ("mysql", "starrocks"):
-        result = db_adapter.execute("SHOW TABLES")
+        result = db_adapter.execute("SHOW TABLES", allow_metadata=True)
     else:  # postgresql
         result = db_adapter.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
@@ -132,7 +132,7 @@ def scan_database(db_adapter) -> dict:
 
         # 获取字段信息
         if db_type in ("mysql", "starrocks"):
-            col_result = db_adapter.execute(f"DESCRIBE {table_name}")
+            col_result = db_adapter.execute(f"DESCRIBE {table_name}", allow_metadata=True)
         else:
             col_result = db_adapter.execute(
                 f"SELECT column_name, data_type FROM information_schema.columns "
@@ -180,7 +180,10 @@ def scan_database(db_adapter) -> dict:
                 # MySQL: SHOW TABLE STATUS
                 approx_sql = f"SHOW TABLE STATUS LIKE '{table_name}'"
 
-            count_result = db_adapter.execute(approx_sql)
+            count_result = db_adapter.execute(
+                approx_sql,
+                allow_metadata=approx_sql.lstrip().upper().startswith("SHOW"),
+            )
             if count_result.get("success") and count_result.get("rows"):
                 raw = count_result["rows"][0][0]
                 if raw is not None:

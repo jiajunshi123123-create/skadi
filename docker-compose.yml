@@ -7,7 +7,8 @@ services:
     container_name: ai-data-web
     env_file: .env
     ports:
-      - "8080:8080"
+      # 只绑定宿主机回环地址。需要对局域网开放时再改成 "8080:8080"。
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,12 +41,13 @@ services:
     environment:
       POSTGRES_DB: agent_experience
       POSTGRES_USER: agent_user
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?Set PG_PASSWORD in .env to a strong password of at least 12 characters}
+    # 不把 5432 发布到宿主机。应用通过 compose 网络访问服务名 postgres。
+    entrypoint: ["sh", "/usr/local/bin/require_strong_pg_password.sh"]
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./scripts/require_strong_pg_password.sh:/usr/local/bin/require_strong_pg_password.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agent_user -d agent_experience"]
       interval: 5s
@@ -56,8 +58,7 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     container_name: agent-chromadb
-    ports:
-      - "8000:8000"
+    # 不把 8000 发布到宿主机。Chroma 无认证，只留在 compose 网络内。
     volumes:
       - chroma_data:/chroma/chroma
     restart: unless-stopped

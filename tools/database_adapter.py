@@ -8,18 +8,17 @@
     result = db.execute("SELECT 1")
 """
 import os
-import re
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from utils.sql_safety import check_readonly_sql
+
 logger = logging.getLogger(__name__)
 
-# 危险SQL关键字黑名单（只允许 SELECT / EXPLAIN / SHOW / DESCRIBE）
-_FORBIDDEN_KEYWORDS = re.compile(
-    r'\b(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b',
-    re.IGNORECASE
-)
+_MYSQL_SQL_MODE = "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"
+_MYSQL_READ_ONLY = "SET SESSION TRANSACTION READ ONLY"
+_unsupported_session_guards = set()
 
 
 class DatabaseAdapter(ABC):
@@ -39,7 +38,7 @@ class DatabaseAdapter(ABC):
             raise ValueError(f"Unsupported DB_TYPE: {db_type}")
 
     @abstractmethod
-    def execute(self, sql: str, database: str = None) -> dict:
+    def execute(self, sql: str, database: str = None, *, allow_metadata: bool = False) -> dict:
         """
         执行SQL，返回统一格式：
         {
@@ -70,7 +69,7 @@ class DatabaseAdapter(ABC):
         return {
             'host': os.getenv('DB_HOST', 'localhost'),
             'port': int(os.getenv('DB_PORT', self._default_port())),
-            'user': os.getenv('DB_USER', 'root'),
+            'user': os.getenv('DB_USER', ''),
             'password': os.getenv('DB_PASSWORD', ''),
             'database': os.getenv('DB_NAME', ''),
         }
@@ -80,23 +79,13 @@ class DatabaseAdapter(ABC):
         return '3306'
 
     @staticmethod
-    def _check_sql_safety(sql: str) -> Optional[str]:
+    def _check_sql_safety(sql: str, allow_metadata: bool = False) -> Optional[str]:
         """
-        SQL安全检查，禁止写操作。
+        SQL安全检查，只允许单条只读语句。
+        allow_metadata=True 时额外放行 SHOW / DESCRIBE（扫描器使用）。
         Returns: 错误消息（如果不安全），None表示通过。
         """
-        sql_stripped = sql.strip()
-        # 允许的前缀
-        allowed_prefixes = ('SELECT', 'EXPLAIN', 'SHOW', 'DESCRIBE', 'DESC', 'WITH')
-        if not sql_stripped.upper().startswith(allowed_prefixes):
-            return f"SQL被安全检查拒绝：只允许 SELECT/EXPLAIN/SHOW/DESCRIBE 语句"
-
-        # 即使以SELECT开头，也检查是否包含危险关键字（防止子查询注入）
-        match = _FORBIDDEN_KEYWORDS.search(sql_stripped)
-        if match:
-            return f"SQL被安全检查拒绝：包含危险关键字 '{match.group()}'"
-
-        return None
+        return check_readonly_sql(sql, allow_metadata=allow_metadata)
 
 
 # ============================================================
@@ -109,10 +98,10 @@ class MySQLAdapter(DatabaseAdapter):
     def _default_port(self) -> str:
         return '3306'
 
-    def execute(self, sql: str, database: str = None) -> dict:
+    def execute(self, sql: str, database: str = None, *, allow_metadata: bool = False) -> dict:
         """执行SQL查询"""
         # 安全检查
-        safety_err = self._check_sql_safety(sql)
+        safety_err = self._check_sql_safety(sql, allow_metadata=allow_metadata)
         if safety_err:
             return {'success': False, 'error': safety_err, 'cols': [], 'rows': [], 'row_count': 0}
 
@@ -135,6 +124,7 @@ class MySQLAdapter(DatabaseAdapter):
                 charset='utf8mb4',
             )
             with conn.cursor() as cursor:
+                apply_mysql_readonly_session(cursor)
                 cursor.execute(sql)
                 cols = [desc[0] for desc in cursor.description] if cursor.description else []
                 rows = cursor.fetchall()
@@ -206,10 +196,10 @@ class PostgreSQLAdapter(DatabaseAdapter):
     def _default_port(self) -> str:
         return '5432'
 
-    def execute(self, sql: str, database: str = None) -> dict:
+    def execute(self, sql: str, database: str = None, *, allow_metadata: bool = False) -> dict:
         """执行SQL查询"""
         # 安全检查
-        safety_err = self._check_sql_safety(sql)
+        safety_err = self._check_sql_safety(sql, allow_metadata=allow_metadata)
         if safety_err:
             return {'success': False, 'error': safety_err, 'cols': [], 'rows': [], 'row_count': 0}
 
@@ -300,3 +290,37 @@ class StarRocksAdapter(MySQLAdapter):
 
     def _default_port(self) -> str:
         return '9030'
+
+
+def apply_mysql_readonly_session(cursor) -> bool:
+    """为 MySQL / StarRocks 连接尽量打开会话级只读。
+
+    先固定 sql_mode，使引号解析与 utils.sql_safety 一致，再请求只读事务。
+    服务端不支持时只记录一次并继续（StarRocks 部分版本没有该语句）。
+    返回是否成功执行了 READ ONLY。
+    """
+    readonly_ok = False
+    statements = (
+        f"SET SESSION sql_mode = '{_MYSQL_SQL_MODE}'",
+        _MYSQL_READ_ONLY,
+    )
+    for statement in statements:
+        try:
+            cursor.execute(statement)
+            if statement == _MYSQL_READ_ONLY:
+                readonly_ok = True
+        except Exception as exc:
+            if statement not in _unsupported_session_guards:
+                _unsupported_session_guards.add(statement)
+                logger.warning(
+                    "[MySQLAdapter] 无法执行会话防护 %s（将仅依赖 SQL 解析）: %s",
+                    statement,
+                    exc,
+                )
+            connection = getattr(cursor, "connection", None)
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+    return readonly_ok

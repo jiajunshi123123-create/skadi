@@ -40,18 +40,24 @@ DEEPSEEK_API_KEY=sk-your-key-here
 DB_TYPE=mysql                # mysql / postgresql / starrocks
 DB_HOST=your-db-host
 DB_PORT=3306
-DB_USER=readonly_user
+DB_USER=readonly_user        # GRANT SELECT only — do not use root
 DB_PASSWORD=your_password
 DB_NAME=your_database
+
+# Required. python -c "import secrets; print(secrets.token_urlsafe(32))"
+WEB_API_KEY=generate-a-long-random-key
+WEB_ADMIN_API_KEY=generate-a-different-long-random-key
 
 PG_HOST=postgres             # Use the docker-compose service name
 PG_DATABASE=agent_experience
 PG_USER=agent_user
-PG_PASSWORD=change_me
+PG_PASSWORD=generate-a-strong-password-12-plus-chars
 
 DINGTALK_BOT_APP_KEY=your_key
 DINGTALK_BOT_APP_SECRET=your_secret
 ```
+
+`docker-compose.yml` does not publish Postgres `5432` or Chroma `8000`. The web port is published on `127.0.0.1:8080` only. `PG_PASSWORD` must be set to a non-placeholder value of at least 12 characters or Postgres will refuse to start. Changing the password later does not update an already initialized data volume; run `ALTER USER` inside the container if the volume already exists.
 
 ### Step 3 — Launch Services
 
@@ -379,7 +385,10 @@ LIMIT 20;
 
 Before going to production:
 
-- [ ] Use a **read-only** database user for `DB_USER`
+- [ ] Use a **read-only** database user for `DB_USER` (`GRANT SELECT` only)
+- [ ] Set a long random `WEB_API_KEY` and a different `WEB_ADMIN_API_KEY`
+- [ ] Set `PG_PASSWORD` to 12+ characters. Do not publish Postgres or Chroma ports
+- [ ] If this repository ever contained hardcoded database defaults, rotate that account and review git history
 - [ ] Whitelist only the bot server IP at the database firewall
 - [ ] Store `.env` with `chmod 600` (do not commit to git)
 - [ ] Rotate `DEEPSEEK_API_KEY` if leaked
