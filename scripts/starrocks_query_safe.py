@@ -10,19 +10,37 @@ if str(_ROOT) not in sys.path:
 from tools.database_adapter import apply_mysql_readonly_session
 from utils.sql_safety import check_readonly_sql
 
-DB = sys.argv[1] if len(sys.argv) > 1 else "your_database"
+def _env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+DB = sys.argv[1] if len(sys.argv) > 1 else _env("STARROCKS_DB", "DB_NAME")
 SQL = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
-if not SQL: print("Usage: starrocks_query_safe.py <db> <SQL>"); sys.exit(1)
+if not SQL:
+    print("Usage: starrocks_query_safe.py <db> <SQL>")
+    sys.exit(1)
 
-PASS = os.environ.get("STARROCKS_PASSWORD","")
-if not PASS:
-    try:
-        with open(os.environ.get("ENV_FILE", "/opt/workspace/.env")) as f:
-            for line in f:
-                if line.startswith("STARROCKS_PASSWORD="): PASS = line.split("=",1)[1].strip(); break
-    except: pass
+HOST = _env("STARROCKS_HOST", "DB_HOST")
+USER = _env("STARROCKS_USER", "DB_USER")
+PASS = _env("STARROCKS_PASSWORD", "DB_PASSWORD")
+PORT = int(_env("STARROCKS_PORT", "DB_PORT") or "9030")
+if not HOST or not USER or not DB:
+    print("REJECTED: 缺少数据库地址、用户或库名，请设置 STARROCKS_* 或 DB_*")
+    sys.exit(1)
 
-CONN = {"host":os.environ.get("STARROCKS_HOST","your-starrocks-host"),"port":9030,"user":os.environ.get("STARROCKS_USER","data_user"),"password":PASS,"database":DB,"connect_timeout":10,"read_timeout":30}
+CONN = {
+    "host": HOST,
+    "port": PORT,
+    "user": USER,
+    "password": PASS,
+    "database": DB,
+    "connect_timeout": 10,
+    "read_timeout": 30,
+}
 
 def run(sql):
     conn = pymysql.connect(**CONN); cur = conn.cursor()

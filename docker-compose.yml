@@ -46,6 +46,7 @@ services:
     entrypoint: ["sh", "/usr/local/bin/require_strong_pg_password.sh"]
     volumes:
       - pg_data:/var/lib/postgresql/data
+      # 仅空数据卷会执行。已有 pg_data 时请按 scripts/MIGRATION.md 跑 migrate.sql。
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./scripts/require_strong_pg_password.sh:/usr/local/bin/require_strong_pg_password.sh:ro
     healthcheck:

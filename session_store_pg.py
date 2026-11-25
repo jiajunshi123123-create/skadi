@@ -1,7 +1,7 @@
 """
 PostgreSQL 会话存储模块
 用于多轮对话场景下的会话上下文持久化。
-dingtalk_bot.py 调用本模块保存/读取/删除用户会话。
+core.conversation 调用本模块保存/读取/删除用户会话。
 
 建表 DDL:
     CREATE TABLE IF NOT EXISTS sessions (

@@ -3,17 +3,11 @@
 - forward_to_openclaw() 已废弃，保留注释备份
 - 新增 forward_to_langgraph() 使用 LangGraph 三Agent编排器
 """
-import asyncio, json, logging, os, sys, time
-import psycopg2
+import asyncio, logging, os, sys, time
+
+from core.audit import write_audit_log
 
 logger = logging.getLogger("agent_forward")
-
-PG = {
-    "host": os.getenv("PG_HOST", "localhost"),
-    "dbname": os.getenv("PG_DATABASE", "agent_experience"),
-    "user": os.getenv("PG_USER", "agent_user"),
-    "password": os.environ.get("PGPASSWORD", "")
-}
 
 # 确保能找到 agent_orchestrator 模块
 WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', '/opt/workspace')
@@ -21,17 +15,27 @@ sys.path.insert(0, WORKSPACE_DIR)
 from agent_orchestrator import run_agent
 
 def _audit(uid, uname, query, resp, src="langgraph-orchestrator", dur=0, tok=0, status="success"):
-    """审计日志 - 记录每次Agent调用"""
-    try:
-        conn = psycopg2.connect(**PG)
-        cur = conn.cursor()
-        cur.execute("INSERT INTO audit_logs(user_id,user_name,query,response,source,duration_ms,tokens,status) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
-            (uid, uname, query[:200], resp[:300], src, dur, tok, status))
-        conn.commit(); cur.close(); conn.close()
-    except: pass
+    """审计日志。写入失败时由 write_audit_log 记录错误，不再静默忽略。"""
+    write_audit_log(
+        user_id=uid,
+        user_name=uname,
+        query=query,
+        response=resp,
+        source=src,
+        duration_ms=dur,
+        tokens=tok,
+        status=status,
+    )
 
 
-async def forward_to_langgraph(prompt: str, timeout: int = 120, user_role: dict = None, last_context: dict = None) -> tuple:
+async def forward_to_langgraph(
+    prompt: str,
+    timeout: int = 120,
+    user_role: dict = None,
+    last_context: dict = None,
+    user_id: str = "",
+    user_name: str = "",
+) -> tuple:
     """通过 LangGraph 三Agent编排器处理用户查询
     
     替代原 forward_to_openclaw()，直接调用本地 Python 编排器，
@@ -53,16 +57,16 @@ async def forward_to_langgraph(prompt: str, timeout: int = 120, user_role: dict 
         )
         dur = int((time.time() - t0) * 1000)
         # 审计日志
-        _audit("", "", prompt[:200], reply[:300] if reply else "", "langgraph-orchestrator", dur, 0, "success")
+        _audit(user_id, user_name, prompt[:200], reply[:300] if reply else "", "langgraph-orchestrator", dur, 0, "success")
         return reply if reply else "分析结果为空，请重试。", metadata
     except asyncio.TimeoutError:
         dur = int((time.time() - t0) * 1000)
-        _audit("", "", prompt[:200], "", "langgraph-orchestrator", dur, 0, "timeout")
+        _audit(user_id, user_name, prompt[:200], "", "langgraph-orchestrator", dur, 0, "timeout")
         return "⚠️ 分析超时，请简化查询后重试。", {}
     except Exception as e:
         dur = int((time.time() - t0) * 1000)
         logger.error(f"LangGraph agent error: {e}")
-        _audit("", "", prompt[:200], str(e)[:300], "langgraph-orchestrator", dur, 0, "error")
+        _audit(user_id, user_name, prompt[:200], str(e)[:300], "langgraph-orchestrator", dur, 0, "error")
         return f"⚠️ AI服务异常: {str(e)}", {}
 
 

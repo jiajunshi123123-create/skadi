@@ -31,6 +31,8 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,39}$")
 _SCOPE_ENV = {
     "user": ("WEB_RATE_LIMIT_PER_MINUTE", 30),
     "admin": ("WEB_ADMIN_RATE_LIMIT_PER_MINUTE", 5),
+    # 钉钉等机器人通道按「渠道:外部用户 ID」计数，与 Web 调用方分开。
+    "bot": ("BOT_RATE_LIMIT_PER_MINUTE", 30),
 }
 
 
