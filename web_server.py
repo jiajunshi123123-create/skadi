@@ -363,7 +363,19 @@ async def scan_database(request: Request):
                 f.write(f"# role 默认为'未审核'，请根据业务需要调整\n")
                 f.write(f"# ===================================================================\n\n")
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            
+
+            try:
+                from utils.pre_sql_hook import reload_allowed_tables
+                reloaded = reload_allowed_tables()
+                logger.info("[Web] 扫描后刷新表白名单: %d", len(reloaded))
+            except Exception:
+                logger.exception("[Web] 扫描后刷新表白名单失败")
+            try:
+                from agent_orchestrator import plan_agent
+                plan_agent.reload_dictionary()
+            except Exception:
+                logger.exception("[Web] 扫描后刷新规划提示词失败")
+
             table_count = data["table_count"]
             done_msg = f"扫描完成，发现 {table_count} 张表，已保存到 config/data_dictionary.yml"
             done_data = {"table_count": table_count, "path": "config/data_dictionary.yml", "msg": done_msg}

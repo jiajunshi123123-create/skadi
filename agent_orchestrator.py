@@ -112,26 +112,45 @@ def _lookup_cached_plan(state: dict):
     }}
 
 
-def _remember_query_cache(state: dict, query_result: dict) -> None:
+def _remember_query_cache(state: dict, query_result: dict):
+    """成功查询写入缓存，并把 cache_id 放回 plan_task 和 query_result。
+
+    存的是注入强制条件之前的 SQL。命中后 QueryAgent 再按当前角色注入，
+    避免条件写两遍，角色的 mandatory_filters 变了也不会沿用旧条件。
+    返回的 id 给赞踩和后续成功计数用；candidate 靠这个 id 才能升成 verified。
+    """
     role = state.get("user_role") or {}
     role_id = role.get("role_id") or ""
-    sql = (query_result or {}).get("sql_executed") or ""
-    if not role_id or not sql:
-        return
+    plan = state.get("plan_task") if isinstance(state.get("plan_task"), dict) else {}
+    raw_sql = ""
+    if isinstance(query_result, dict):
+        raw_sql = query_result.get("sql_before_enforce") or ""
+    raw_sql = raw_sql or plan.get("sql") or ""
+    if not role_id or not raw_sql:
+        return None
     try:
         from learning.query_cache import query_cache
         from permission_manager import permission_manager
 
-        plan = state.get("plan_task") or {}
-        query_cache.observe_success(
+        cache_id = query_cache.observe_success(
             question=state.get("user_query") or "",
-            sql=sql,
+            sql=raw_sql,
             role_id=role_id,
-            tables=permission_manager.extract_tables_from_sql(sql),
+            tables=permission_manager.extract_tables_from_sql(raw_sql),
             cache_id=plan.get("cache_id"),
         )
     except Exception:
         logger.exception("[Orchestrator] 写入查询缓存失败")
+        return None
+    if not cache_id:
+        return None
+    cache_id = int(cache_id)
+    if not isinstance(state.get("plan_task"), dict):
+        state["plan_task"] = plan
+    plan["cache_id"] = cache_id
+    if isinstance(query_result, dict):
+        query_result["cache_id"] = cache_id
+    return cache_id
 
 
 async def plan_node(state: AgentState) -> dict:
@@ -424,7 +443,8 @@ async def format_output(state: AgentState) -> dict:
     - 异常流程: 使用错误信息生成友好提示
     """
     duration = time.time() - state['start_time']
-    
+    cache_id = None
+
     if state.get('error'):
         # 错误兜底回复
         reply = (
@@ -452,12 +472,17 @@ async def format_output(state: AgentState) -> dict:
                 gaps = analysis_plan['data_gaps']
                 gap_text = '; '.join(g['field'] for g in gaps[:3])
                 reply += f"\n\n⚠️ 数据缺口: {gap_text}"
+        # 缓存 id 要写回状态，不能跟自学习绑在同一个 try 里，否则经验库失败时候选行永远升不了级。
+        query_result = state.get('query_result') or {}
+        try:
+            cache_id = _remember_query_cache(state, query_result)
+        except Exception:
+            logger.exception("[Orchestrator] 写入查询缓存失败")
         # 触发自学习（失败不阻塞主流程）
         try:
             from learning.feedback_loop import feedback_loop
             from learning.pattern_store import pattern_store
             from learning.memory_consolidator import memory_consolidator
-            query_result = state.get('query_result') or {}
             user_query = state.get('user_query', '')
             role = state.get('user_role') or {}
             feedback_loop.on_query_success(
@@ -467,7 +492,6 @@ async def format_output(state: AgentState) -> dict:
                 analysis=reply,
                 role_id=role.get('role_id') or '',
             )
-            _remember_query_cache(state, query_result)
             # 记录成功查询为最佳实践（写入 lessons 表）
             if query_result.get('sql_executed') and user_query:
                 pattern_store.save_lesson(
@@ -505,7 +529,15 @@ async def format_output(state: AgentState) -> dict:
     # DingTalk 消息限制约20KB，超出会导致发送失败
     reply = truncate_for_dingtalk(reply)
 
-    return {'final_reply': reply}
+    updates = {'final_reply': reply}
+    if cache_id:
+        plan = state.get('plan_task')
+        if isinstance(plan, dict):
+            updates['plan_task'] = plan
+        stored_result = state.get('query_result')
+        if isinstance(stored_result, dict):
+            updates['query_result'] = stored_result
+    return updates
 
 
 # ============================================================

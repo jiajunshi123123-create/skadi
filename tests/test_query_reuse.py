@@ -3,7 +3,9 @@
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from agents.query_agent import QueryAgent
 from agents.sql_guard import prepare_sql
 from learning.case_record import build_case
 from learning.embeddings import hash_embed
@@ -11,7 +13,7 @@ from learning.lessons import render_lessons, select_relevant
 from learning.pattern_text import keywords_for_match
 from learning.plan_context import format_similar_patterns
 from learning.query_cache import MemoryQueryCacheRepo, QueryCache
-from learning.time_params import normalize_question, render_sql, templatize_sql
+from learning.time_params import normalize_question, render_sql, sql_fragment, templatize_sql
 from permission_manager import PermissionDenied, permission_manager
 from utils.web_roles import match_role_id, resolve_web_role
 
@@ -149,6 +151,61 @@ class QueryReuseTests(unittest.TestCase):
         self.assertEqual(self.cache.record_vote(row_id, "negative"), "disabled")
         self.assertIsNone(self.cache.lookup("昨天日活多少", "analyst", lambda tables: True))
 
+    def test_repeated_success_promotes_one_row_without_a_prior_hit(self):
+        starrocks = (
+            "SELECT COUNT(DISTINCT user_id) AS dau FROM events "
+            "WHERE dt_utc >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) AND dt_utc < CURRENT_DATE()"
+        )
+        first = self.cache.observe_success("昨天日活多少", starrocks, "analyst", ["events"])
+        second_sql = starrocks.replace("INTERVAL 1 DAY", "INTERVAL 2 DAY")
+        second = self.cache.observe_success("前天日活多少", second_sql, "analyst", ["events"])
+        third = self.cache.observe_success("昨天日活多少", starrocks, "analyst", ["events"])
+        self.assertEqual(first, second)
+        self.assertEqual(second, third)
+        self.assertEqual(len(self.cache.repo.rows), 1)
+        row = self.cache.repo.get(first)
+        self.assertEqual(row["success_cnt"], 3)
+        self.assertEqual(row["status"], "verified")
+        self.assertNotIn("region", row["sql_template"])
+        self.assertIn("{time_sql}", row["sql_template"])
+        hit = self.cache.lookup("前天日活多少", "analyst", lambda tables: True)
+        self.assertIsNotNone(hit)
+        self.assertIn("INTERVAL 2 DAY", hit.sql)
+        self.assertNotIn("INTERVAL 1 DAY", hit.sql)
+
+    def test_starrocks_time_sql_is_parameterized_without_weekday(self):
+        self.assertNotIn("WEEKDAY", (sql_fragment("本周") or "").upper())
+        self.assertIn("CURRENT_DATE()", sql_fragment("本周"))
+        week_sql = "SELECT w FROM events WHERE d >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"
+        week_template = templatize_sql(week_sql, "本周")
+        self.assertIn("{time_sql}", week_template)
+        rendered_week = render_sql(week_template, {"time": "本周"}, {"time": "本周"})
+        self.assertNotIn("WEEKDAY", rendered_week.upper())
+
+        ranged = (
+            "SELECT dau FROM events "
+            "WHERE dt_utc >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) AND dt_utc < CURRENT_DATE()"
+        )
+        template = templatize_sql(ranged, "昨天")
+        self.assertIn("{time_sql}", template)
+        self.assertNotIn("INTERVAL 1 DAY", template)
+        self.assertIn("< CURRENT_DATE()", template)
+        rendered = render_sql(template, {"time": "昨天"}, {"time": "前天"})
+        self.assertIn("INTERVAL 2 DAY", rendered)
+        self.assertNotIn("INTERVAL 1 DAY", rendered)
+
+        today = templatize_sql(ranged, "今天")
+        self.assertIn("DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)", today)
+        self.assertTrue(today.endswith("{time_sql}"))
+        self.assertNotIn("DATE_SUB({time_sql}", today)
+
+    def test_enforcing_cached_sql_injects_the_filter_once(self):
+        raw = "SELECT dau FROM events WHERE d = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)"
+        once = permission_manager.enforce_sql(raw, ANALYST)
+        self.assertEqual(once.lower().count("region"), 1)
+        twice = permission_manager.enforce_sql(once, ANALYST)
+        self.assertGreaterEqual(twice.lower().count("region"), 2)
+
 
 class WebRoleTests(unittest.TestCase):
     def test_unmapped_key_is_rejected(self):
@@ -167,3 +224,139 @@ class WebRoleTests(unittest.TestCase):
         web = (ROOT / "web_server.py").read_text(encoding="utf-8")
         self.assertIn("resolve_web_role", web)
         self.assertIn("last_context=session.get('last_context')", web)
+
+
+class _StubDb:
+    def __init__(self):
+        self.explained = []
+        self.executed = []
+
+    def explain(self, sql):
+        self.explained.append(sql)
+        return {"success": True}
+
+    def execute(self, sql):
+        self.executed.append(sql)
+        return {"success": True, "cols": ["id"], "rows": [[1]], "row_count": 1}
+
+
+class PermissionAuditTests(unittest.TestCase):
+    def _agent(self):
+        agent = QueryAgent.__new__(QueryAgent)
+        agent.db = _StubDb()
+        return agent
+
+    def test_allowed_query_is_audited_and_keeps_sql_before_filters(self):
+        from utils.pre_sql_hook import ALLOWED_TABLES
+
+        table = sorted(ALLOWED_TABLES)[0]
+        role = {
+            "role_id": "analyst",
+            "role_name": "分析师",
+            "staff_id": "u-1",
+            "staff_name": "张三",
+            "allowed_tables": [table],
+            "mandatory_filters": {table: "region = 'east'"},
+            "allow_user_detail": True,
+        }
+        agent = self._agent()
+        calls = []
+        with patch.object(permission_manager, "log_permission_audit", side_effect=lambda **kwargs: calls.append(kwargs)):
+            result = agent._run_query(f"SELECT id FROM {table}", role)
+        self.assertTrue(result["success"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["action"], "query")
+        self.assertEqual(calls[0]["staff_id"], "u-1")
+        self.assertNotIn("region", calls[0]["original_sql"])
+        self.assertIn("region = 'east'", calls[0]["enforced_sql"])
+        self.assertEqual(result["sql_before_enforce"], f"SELECT id FROM {table}")
+        self.assertIn("region = 'east'", result["sql_executed"])
+        self.assertEqual(len(agent.db.executed), 1)
+
+    def test_denied_query_is_audited_and_not_executed(self):
+        from utils.pre_sql_hook import ALLOWED_TABLES
+
+        table = sorted(ALLOWED_TABLES)[0]
+        role = {
+            "role_id": "analyst",
+            "role_name": "分析师",
+            "staff_id": "u-1",
+            "staff_name": "张三",
+            "allowed_tables": ["some_other_table"],
+            "mandatory_filters": {},
+            "allow_user_detail": True,
+        }
+        agent = self._agent()
+        calls = []
+        with patch.object(permission_manager, "log_permission_audit", side_effect=lambda **kwargs: calls.append(kwargs)):
+            result = agent._run_query(f"SELECT id FROM {table}", role)
+        self.assertTrue(result["permission_denied"])
+        self.assertEqual(calls[0]["action"], "denied")
+        self.assertIn(table.lower(), calls[0]["denied_reason"].lower())
+        self.assertEqual(agent.db.executed, [])
+        self.assertEqual(agent.db.explained, [])
+
+    def test_admin_success_is_not_audited(self):
+        from utils.pre_sql_hook import ALLOWED_TABLES
+
+        table = sorted(ALLOWED_TABLES)[0]
+        agent = self._agent()
+        calls = []
+        with patch.object(permission_manager, "log_permission_audit", side_effect=lambda **kwargs: calls.append(kwargs)):
+            result = agent._run_query(
+                f"SELECT id FROM {table}",
+                {"role_id": "admin", "staff_id": "root"},
+            )
+        self.assertTrue(result["success"])
+        self.assertEqual(calls, [])
+
+
+class CacheRoundTripTests(unittest.TestCase):
+    def test_success_writes_cache_id_back_and_stores_unfiltered_sql(self):
+        os.environ["EMBEDDING_BACKEND"] = "hash"
+        import langchain_openai
+        import agents.query_agent as query_agent_mod
+
+        class _FakeLLM:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        with patch.object(langchain_openai, "ChatOpenAI", _FakeLLM), \
+             patch.object(query_agent_mod, "ChatOpenAI", _FakeLLM):
+            from agent_orchestrator import _remember_query_cache, format_output
+
+        cache = QueryCache(
+            repo=MemoryQueryCacheRepo(),
+            embedder=hash_embed,
+            threshold=0.85,
+            success_to_verify=3,
+            down_threshold=2,
+        )
+        raw = (
+            "SELECT dau FROM events "
+            "WHERE d = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)"
+        )
+        state = {
+            "user_query": "昨天日活多少",
+            "user_role": {"role_id": "analyst"},
+            "plan_task": {"sql": raw, "intent": "日活"},
+            "query_result": {
+                "success": True,
+                "row_count": 1,
+                "sql_executed": raw + " AND region = 'east'",
+                "sql_before_enforce": raw,
+            },
+            "analysis": "日活 100",
+            "start_time": 0,
+        }
+        with patch("learning.query_cache.query_cache", cache):
+            cache_id = _remember_query_cache(state, state["query_result"])
+            output = __import__("asyncio").run(format_output(dict(state)))
+        self.assertEqual(cache_id, 1)
+        self.assertEqual(state["plan_task"]["cache_id"], 1)
+        self.assertEqual(state["query_result"]["cache_id"], 1)
+        stored = cache.repo.get(1)["sql_template"]
+        self.assertNotIn("region", stored)
+        self.assertIn("{time_sql}", stored)
+        self.assertEqual(output["plan_task"]["cache_id"], 1)
+        self.assertEqual(output["query_result"]["cache_id"], 1)

@@ -2,11 +2,15 @@
 
 import os
 import unittest
+from pathlib import Path
+
+from unittest.mock import patch
 
 from utils.pre_sql_hook import (
     ALLOWED_TABLES,
     HookExitCode,
     PreSQLHook,
+    reload_allowed_tables,
     strict_mode_from_env,
 )
 
@@ -56,10 +60,44 @@ class PreSqlHookTests(unittest.TestCase):
         self.assertEqual(result.exit_code, HookExitCode.BLOCK)
         self.assertFalse(result.is_safe)
 
-    def test_strict_mode_blocks_select_star(self):
+    def test_strict_mode_warns_on_select_star_and_blocks_unknown_tables(self):
         table = sorted(ALLOWED_TABLES)[0]
-        result = PreSQLHook(strict_mode=True).validate(f"SELECT * FROM {table}")
-        self.assertEqual(result.exit_code, HookExitCode.BLOCK)
+        star = PreSQLHook(strict_mode=True).validate(f"SELECT * FROM {table}")
+        self.assertEqual(star.exit_code, HookExitCode.WARN)
+        self.assertTrue(star.is_safe)
+        fuzzy = PreSQLHook(strict_mode=True).validate(
+            f"SELECT id FROM {table} WHERE name LIKE '%foo%'"
+        )
+        self.assertEqual(fuzzy.exit_code, HookExitCode.WARN)
+        joined = (
+            f"SELECT a.id FROM {table} a "
+            f"JOIN {table} b ON a.id = b.id "
+            f"JOIN {table} c ON a.id = c.id "
+            f"JOIN {table} d ON a.id = d.id "
+            f"JOIN {table} e ON a.id = e.id"
+        )
+        many_joins = PreSQLHook(strict_mode=True).validate(joined)
+        self.assertEqual(many_joins.exit_code, HookExitCode.WARN)
+        unknown = PreSQLHook(strict_mode=True).validate("SELECT id FROM not_registered_xyz")
+        self.assertEqual(unknown.exit_code, HookExitCode.BLOCK)
+        self.assertFalse(unknown.is_safe)
+
+    def test_reload_allowed_tables_picks_up_scanned_names(self):
+        snapshot = set(ALLOWED_TABLES)
+        try:
+            with patch(
+                "utils.pre_sql_hook._load_allowed_tables_from_dd",
+                return_value=snapshot | {"brand_new_scan_table"},
+            ):
+                reload_allowed_tables()
+            result = PreSQLHook(strict_mode=True).validate("SELECT id FROM brand_new_scan_table")
+            self.assertNotEqual(result.exit_code, HookExitCode.BLOCK, result.message)
+        finally:
+            ALLOWED_TABLES.clear()
+            ALLOWED_TABLES.update(snapshot)
+        web = (Path(__file__).resolve().parents[1] / "web_server.py").read_text(encoding="utf-8")
+        self.assertIn("reload_allowed_tables", web)
+        self.assertIn("reload_dictionary", web)
 
     def test_quick_check_accepts_cte_and_rejects_export(self):
         hook = PreSQLHook(strict_mode=True)

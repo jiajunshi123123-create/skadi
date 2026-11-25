@@ -178,6 +178,19 @@ class BotFlowTests(unittest.TestCase):
         )
         self.assertEqual(api.texts, [])
 
+    def test_patch_failure_falls_back_to_text(self):
+        class _FailPatch(_Api):
+            def patch_card(self, message_id, card):
+                raise RuntimeError("patch failed")
+
+        api = _FailPatch()
+        sink = FeishuSink(api, "ou_user")
+        sink.send(ANALYZING_TEXT)
+        sink.send("日活 100")
+        self.assertEqual(len(api.cards), 1)
+        self.assertEqual(api.patches, [])
+        self.assertEqual(api.texts, [("ou_user", "日活 100")])
+
     def test_group_and_duplicate_do_not_call_api(self):
         api = _Api()
         conversation = _Conversation()

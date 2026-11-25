@@ -64,6 +64,10 @@ class PlanAgent:
             prompt = template
         return prompt
 
+    def reload_dictionary(self) -> None:
+        """扫描重写数据字典后重新注入提示词，不用重启进程。"""
+        self.system_prompt = self._load_prompt()
+
     async def plan(self, user_query: str, user_role: dict = None, last_context: dict = None) -> dict:
         """
         接收用户查询，返回 PlanTask dict。

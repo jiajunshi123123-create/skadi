@@ -2,8 +2,11 @@
 
 import asyncio
 import os
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from channels.base import IncomingMessage, MessageDeduper
 from channels.dingtalk import (
@@ -25,6 +28,7 @@ from core.conversation import (
     SUGGESTION_EXPIRED_TEXT,
     UNEXPECTED_ERROR_TEXT,
     ConversationService,
+    _default_on_feedback,
     is_confirmation,
     is_follow_up,
 )
@@ -218,11 +222,99 @@ class ConversationTests(unittest.TestCase):
         asyncio.run(service.handle(_message(text="是", msg_id="m2"), sent.append))
         self.assertEqual(self.calls[1]["prompt"], "最近7天日活趋势")
 
-    def test_confirmation_without_pending_does_not_call_agent(self):
+    def test_confirmation_without_pending_is_a_normal_message(self):
         sent = []
         asyncio.run(self._service().handle(_message(text="是"), sent.append))
+        self.assertEqual(self.calls[0]["prompt"], "是")
+        self.assertNotIn(SUGGESTION_EXPIRED_TEXT, sent)
+
+    def test_short_queries_are_not_treated_as_confirmations(self):
+        for text in ("1月日活", "昨天好吗", "是谁在查", "py报错"):
+            self.assertFalse(is_confirmation(text), text)
+            sent = []
+            self.calls.clear()
+            asyncio.run(self._service().handle(_message(text=text, msg_id=text), sent.append))
+            self.assertEqual(self.calls[0]["prompt"], text)
+            self.assertNotIn(SUGGESTION_EXPIRED_TEXT, sent)
+        self.assertTrue(is_confirmation("是"))
+        self.assertTrue(is_confirmation("好的"))
+        self.assertTrue(is_confirmation("OK"))
+        self.assertFalse(is_confirmation("请帮我确认一下这张表"))
+
+    def test_hao_de_confirms_pending_suggestion_instead_of_feedback(self):
+        sent = []
+        service = self._service()
+        asyncio.run(service.handle(_message(), sent.append))
+        asyncio.run(service.handle(_message(text="好的", msg_id="m2"), sent.append))
+        self.assertEqual(self.calls[1]["prompt"], "最近7天日活趋势")
+        self.assertEqual(self.feedback, [])
+        self.assertNotIn(FEEDBACK_TEXT, sent)
+
+    def test_hao_de_without_pending_is_positive_feedback(self):
+        sent = []
+        asyncio.run(self._service().handle(_message(text="好的"), sent.append))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.feedback, [("u-001", "positive", None)])
+        self.assertEqual(sent, [FEEDBACK_TEXT])
+
+    def test_expired_suggestion_is_not_executed(self):
+        sent = []
+        service = self._service()
+        service._suggestions["u-001"] = {
+            "suggested_query": "最近7天日活趋势",
+            "saved_at": 1_000_000 - service.suggestion_ttl - 1,
+        }
+        asyncio.run(service.handle(_message(text="是"), sent.append))
         self.assertEqual(self.calls, [])
         self.assertEqual(sent, [SUGGESTION_EXPIRED_TEXT])
+
+    def test_context_keeps_cache_id_from_plan_or_query_result(self):
+        async def runner(prompt, user_role=None, last_context=None, user_id="", user_name=""):
+            self.calls.append(prompt)
+            return (
+                "日活 100",
+                {
+                    "plan_task": {"intent": "日活"},
+                    "query_result": {
+                        "success": True,
+                        "row_count": 1,
+                        "sql_executed": "SELECT 1",
+                        "cache_id": 9,
+                    },
+                },
+            )
+
+        service = self._service(runner=runner)
+        asyncio.run(service.handle(_message(), [].append))
+        self.assertEqual(service._contexts["u-001"]["cache_id"], 9)
+
+    def test_default_feedback_records_a_cache_vote(self):
+        votes = []
+        fake = types.ModuleType("learning.feedback_loop")
+
+        class _Loop:
+            def on_analysis_feedback(self, **kwargs):
+                return None
+
+        fake.feedback_loop = _Loop()
+        previous = sys.modules.get("learning.feedback_loop")
+        sys.modules["learning.feedback_loop"] = fake
+        try:
+            with patch(
+                "learning.query_cache.query_cache.record_vote",
+                side_effect=lambda row_id, polarity: votes.append((row_id, polarity)),
+            ):
+                _default_on_feedback(
+                    _user(),
+                    "positive",
+                    {"cache_id": 9, "last_user_query": "昨天日活", "last_analysis": "100"},
+                )
+        finally:
+            if previous is None:
+                sys.modules.pop("learning.feedback_loop", None)
+            else:
+                sys.modules["learning.feedback_loop"] = previous
+        self.assertEqual(votes, [(9, "positive")])
 
     def test_reset_clears_follow_up_context(self):
         sent = []

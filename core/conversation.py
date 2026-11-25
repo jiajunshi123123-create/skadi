@@ -19,10 +19,10 @@ logger = logging.getLogger("skadi.conversation")
 RESET_COMMANDS = {"重置", "清除记忆", "重新开始", "清空会话", "忘记", "clear"}
 POSITIVE_FEEDBACK = {"👍", "有用", "好的"}
 NEGATIVE_FEEDBACK = {"👎", "没用", "不准确"}
-CONFIRMATION_KEYWORDS = (
+CONFIRMATION_KEYWORDS = frozenset({
     "1", "OK", "ok", "y", "Y", "yes", "Yes", "YES",
     "确认", "执行", "开始", "是", "是的", "好的", "好", "可以",
-)
+})
 FOLLOW_UP_STRONG = (
     "继续下钻", "按", "分别看", "换个维度", "改成按",
     "和", "对比", "同比", "环比", "对照", "比一下",
@@ -61,11 +61,9 @@ def is_follow_up(prompt: str) -> bool:
 
 
 def is_confirmation(prompt: str) -> bool:
-    """很短的确认词。超过 5 个字不视为确认，避免误伤正常问题。"""
+    """整句正好是确认词才算。子串不算，例如「1月日活」里的「1」。"""
     text = (prompt or "").strip()
-    if not text or len(text) > 5:
-        return False
-    return any(keyword == text or keyword in text for keyword in CONFIRMATION_KEYWORDS)
+    return bool(text) and text in CONFIRMATION_KEYWORDS
 
 
 def permission_denied_text(message: IncomingMessage) -> str:
@@ -144,18 +142,24 @@ class ConversationService:
             send(RESET_TEXT)
             return
 
-        if text in POSITIVE_FEEDBACK or text in NEGATIVE_FEEDBACK:
+        if is_confirmation(text):
+            status = self._suggestion_status(user.user_id)
+            if status == "ready":
+                text = self._take_suggestion(user.user_id) or text
+            elif status == "expired":
+                send(SUGGESTION_EXPIRED_TEXT)
+                return
+            elif text in POSITIVE_FEEDBACK or text in NEGATIVE_FEEDBACK:
+                # 「好的」两边都在。没有待确认建议时，它是赞，不是确认。
+                polarity = "positive" if text in POSITIVE_FEEDBACK else "negative"
+                self._record_feedback(user, polarity)
+                send(FEEDBACK_TEXT)
+                return
+        elif text in POSITIVE_FEEDBACK or text in NEGATIVE_FEEDBACK:
             polarity = "positive" if text in POSITIVE_FEEDBACK else "negative"
             self._record_feedback(user, polarity)
             send(FEEDBACK_TEXT)
             return
-
-        if is_confirmation(text):
-            pending = self._take_suggestion(user.user_id)
-            if not pending:
-                send(SUGGESTION_EXPIRED_TEXT)
-                return
-            text = pending
 
         send(ANALYZING_TEXT)
         last_context = self._load_context(user) if is_follow_up(text) else None
@@ -226,7 +230,7 @@ class ConversationService:
             "last_result_summary": (visible or "")[:200],
             "last_analysis": (metadata.get("analysis") or visible or "")[:500],
             "last_user_query": message_text,
-            "cache_id": (metadata.get("plan_task") or {}).get("cache_id"),
+            "cache_id": (metadata.get("plan_task") or {}).get("cache_id") or query_result.get("cache_id"),
             "saved_at": self.clock(),
         }
         self._contexts[user.user_id] = context
@@ -285,6 +289,16 @@ class ConversationService:
             self._contexts[user.user_id] = restored
             return restored
         return None
+
+    def _suggestion_status(self, user_id: str) -> str:
+        """ready：有未过期建议。expired：建议刚过期并已清掉。none：本来就没有。"""
+        entry = self._suggestions.get(user_id)
+        if not entry:
+            return "none"
+        if self.clock() - entry.get("saved_at", 0) > self.suggestion_ttl:
+            self._suggestions.pop(user_id, None)
+            return "expired"
+        return "ready"
 
     def _take_suggestion(self, user_id: str) -> Optional[str]:
         entry = self._suggestions.get(user_id)

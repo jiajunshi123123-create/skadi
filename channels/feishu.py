@@ -312,8 +312,13 @@ class FeishuSink:
                 self.card_id = self.api.send_card(self.open_id, analyzing_card())
                 return
             if self.card_id:
-                self.api.patch_card(self.card_id, result_card(text, with_buttons=True))
-                return
+                try:
+                    self.api.patch_card(self.card_id, result_card(text, with_buttons=True))
+                    return
+                except Exception:
+                    logger.exception("飞书更新卡片失败，改为发送文本 open_id=%s", self.open_id)
+                    self.api.send_text(self.open_id, text)
+                    return
             self.api.send_text(self.open_id, text)
         except Exception:
             logger.exception("飞书回复失败 open_id=%s", self.open_id)

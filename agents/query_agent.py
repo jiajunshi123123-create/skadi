@@ -122,6 +122,7 @@ class QueryAgent:
                 # ---- 空结果验证结束 ----
 
                 result['sql_executed'] = result.get('sql_executed') or sql
+                result.setdefault('sql_before_enforce', sql)
                 result['retries'] = attempt
                 logger.info(f"[QueryAgent] 查询成功，返回 {result.get('row_count', 0)} 行")
                 # 自愈成功（重试后才成功）时，记录为 lesson
@@ -170,12 +171,14 @@ class QueryAgent:
         [历史] 旧实现通过 subprocess 调用 starrocks_query_safe.py，
         现已迁移为 DatabaseAdapter 直连方式，支持 MySQL/PG/StarRocks。
         """
-        from agents.sql_guard import prepare_sql
+        from agents.sql_guard import log_enforcement, prepare_sql
         from permission_manager import PermissionDenied
 
+        original_sql = sql
         try:
             sql = prepare_sql(sql, user_role)
         except PermissionDenied as exc:
+            log_enforcement(user_role, "denied", original_sql, denied_reason=str(exc))
             logger.error("[QueryAgent] 拒绝执行: %s", exc)
             return {
                 'success': False,
@@ -183,6 +186,7 @@ class QueryAgent:
                 'permission_denied': True,
                 'cols': [], 'rows': [], 'row_count': 0,
             }
+        log_enforcement(user_role, "query", original_sql, enforced_sql=sql)
 
         # === P1-3: PreSQLUse Hook — SQL执行前校验 ===
         hook_result = pre_sql_hook.validate(sql)
@@ -212,6 +216,8 @@ class QueryAgent:
         result = self.db.execute(sql)
         if isinstance(result, dict) and result.get('success'):
             result['sql_executed'] = sql
+            # 缓存用注入强制条件之前的 SQL，命中后按当前角色再注入一次。
+            result['sql_before_enforce'] = original_sql
         return result
 
     def _extract_table_name(self, sql: str) -> Optional[str]:

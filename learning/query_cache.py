@@ -259,10 +259,41 @@ class QueryCache:
         self.repo.update(row)
         return row["status"]
 
+    def _existing_id(self, question: str, role_id: str) -> Optional[int]:
+        """同一角色、同一句式里还在用的那一行。优先已验证、成功次数多的。"""
+        if not role_id:
+            return None
+        normalized, _params = normalize_question(question)
+        best_id = None
+        best_rank = None
+        for row in self.repo.list_for_role(role_id):
+            if row.get("normalized_q") != normalized or row.get("status") == "disabled":
+                continue
+            rank = (
+                1 if row.get("status") == "verified" else 0,
+                int(row.get("success_cnt") or 0),
+                int(row.get("id") or 0),
+            )
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_id = row.get("id")
+        return best_id
+
     def observe_success(self, question: str, sql: str, role_id: str, tables: list, cache_id: int = None):
+        """记下一次成功，返回缓存行 id。
+
+        命中已有行就累加成功次数，不再另插一条 candidate。
+        次数达到阈值后 record_success 会把 candidate 升成 verified。
+        """
         try:
             if cache_id:
-                return self.record_success(int(cache_id))
+                status = self.record_success(int(cache_id))
+                if status:
+                    return int(cache_id)
+            existing = self._existing_id(question, role_id)
+            if existing:
+                self.record_success(existing)
+                return int(existing)
             return self.remember(question, sql, role_id, tables)
         except Exception:
             logger.exception("写入查询缓存失败 role=%s", role_id)

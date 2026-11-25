@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 def strict_mode_from_env(default: bool = True) -> bool:
-    """SQL_HOOK_STRICT_MODE 缺省为 true：警告也会阻止执行。"""
+    """SQL_HOOK_STRICT_MODE 缺省为 true：未登记的表会阻止执行。
+
+    SELECT *、过多 JOIN、LIKE 双模糊只警告，不拦截。
+    """
     raw = os.getenv("SQL_HOOK_STRICT_MODE")
     if raw is None or str(raw).strip() == "":
         return default
@@ -75,8 +78,12 @@ WARNING_PATTERNS = [
     (r'JOIN.*JOIN.*JOIN.*JOIN', '超过3个JOIN — 注意查询性能'),
     (r'UNION\s+ALL.*UNION\s+ALL.*UNION\s+ALL', '超过2个UNION ALL — 考虑优化'),
     (r'SELECT\s+\*', 'SELECT * — 建议指定需要的列'),
-    (r'\bLIKE\s+[\'"]%%.*%%[\'"]', 'LIKE双模糊匹配 — 索引失效风险'),
     (r'WHERE.*IN\s*\([^)]{200,}\)', 'IN子句过长 — 建议改用JOIN或子查询'),
+]
+
+# LIKE 的通配符在字符串里。规范化会去掉字面量，所以这条要看原始 SQL。
+LITERAL_WARNING_PATTERNS = [
+    (r"""\bLIKE\s+['"]%[^'"]*%['"]""", 'LIKE双模糊匹配 — 索引失效风险'),
 ]
 
 # 白名单：优先从数据字典动态加载；不可用时回退内置最小白名单
@@ -101,6 +108,15 @@ def _load_allowed_tables_from_dd() -> set:
     }
 
 ALLOWED_TABLES = _load_allowed_tables_from_dd()
+
+
+def reload_allowed_tables() -> set:
+    """重新读数据字典，原地更新白名单。/api/scan 写完 yml 后调用，不用重启。"""
+    fresh = _load_allowed_tables_from_dd()
+    ALLOWED_TABLES.clear()
+    ALLOWED_TABLES.update(fresh)
+    logger.info("[PreSQLHook] 表白名单已刷新: %d", len(ALLOWED_TABLES))
+    return ALLOWED_TABLES
 
 # 表名别名映射（edu前缀 = 生产环境）
 TABLE_ALIASES = {
@@ -128,7 +144,7 @@ class PreSQLHook:
         """初始化钩子。
 
         Args:
-            strict_mode: 严格模式，警告也会阻止执行。
+            strict_mode: 未登记表会阻止执行。SELECT *、过多 JOIN、LIKE 双模糊只警告。
                 None 时读取 SQL_HOOK_STRICT_MODE，缺省为 True。
         """
         if strict_mode is None:
@@ -194,11 +210,13 @@ class PreSQLHook:
             if re.search(pattern, scanned_sql, re.IGNORECASE):
                 warnings.append(description)
                 logger.warning(f"[PreSQLHook] 警告: {description} | SQL: {sql[:80]}...")
+        for pattern, description in LITERAL_WARNING_PATTERNS:
+            if re.search(pattern, sql, re.IGNORECASE):
+                warnings.append(description)
+                logger.warning(f"[PreSQLHook] 警告: {description} | SQL: {sql[:80]}...")
 
-        if warnings and self.strict_mode:
-            checks_failed += 1
-            exit_code = HookExitCode.BLOCK
-        elif warnings:
+        # 性能类警告不拦截。未登记表由下面的白名单决定要不要阻止。
+        if warnings:
             checks_failed += 1
             exit_code = HookExitCode.WARN
         else:
@@ -326,5 +344,5 @@ class PreSQLHook:
         }
 
 
-# 全局实例。严格模式默认开启，可用 SQL_HOOK_STRICT_MODE=false 关闭。
+# 全局实例。未登记表默认阻止执行，可用 SQL_HOOK_STRICT_MODE=false 改成只警告。
 pre_sql_hook = PreSQLHook()
