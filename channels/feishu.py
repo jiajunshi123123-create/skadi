@@ -442,11 +442,14 @@ def install_card_frame_dispatch() -> None:
 
 
 def main() -> None:
+    from config.startup_check import require_entrypoint
+    from utils.heartbeat import start_heartbeat
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    require_entrypoint("feishu")
+    start_heartbeat()
     app_id = os.environ.get("FEISHU_APP_ID", "").strip()
     app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
-    if not app_id or not app_secret:
-        raise SystemExit("缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET")
     workers = os.environ.get("FEISHU_WORKERS", "").strip()
     count = int(workers) if workers.isdigit() and int(workers) > 0 else 4
     FeishuBot(app_id, app_secret, worker_count=count).serve()

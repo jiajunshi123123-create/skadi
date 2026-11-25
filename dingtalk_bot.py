@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -72,7 +73,8 @@ class BotHandler(ChatbotHandler):
                 send(EMPTY_REPLY)
                 return AckMessage.STATUS_OK, "ok"
             if route == ROUTE_HANDLE:
-                await self.conversation.handle(incoming, send)
+                # 身份查询、数据库和模型调用都是同步的，不能占住钉钉这条事件循环。
+                await asyncio.to_thread(self._handle_blocking, incoming, send)
                 return AckMessage.STATUS_OK, "ok"
             logger.error("未知路由 route=%s", route)
             send("消息无法处理，请稍后重试。")
@@ -86,12 +88,18 @@ class BotHandler(ChatbotHandler):
                 logger.exception("钉钉错误回复发送失败")
         return AckMessage.STATUS_OK, "ok"
 
+    def _handle_blocking(self, incoming, send) -> None:
+        asyncio.run(self.conversation.handle(incoming, send))
+
 
 def main() -> None:
+    from config.startup_check import require_entrypoint
+    from utils.heartbeat import start_heartbeat
+
+    require_entrypoint("dingtalk")
+    start_heartbeat()
     key = os.environ.get("DINGTALK_BOT_APP_KEY", "")
     secret = os.environ.get("DINGTALK_BOT_APP_SECRET", "")
-    if not key or not secret:
-        raise SystemExit("缺少 DINGTALK_BOT_APP_KEY 或 DINGTALK_BOT_APP_SECRET")
     client = DingTalkStreamClient(Credential(key, secret))
     client.register_callback_handler("/v1.0/im/bot/messages/get", BotHandler())
     logger.info("钉钉机器人启动")

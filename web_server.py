@@ -180,7 +180,7 @@ async def chat(request: Request):
 
         from utils.web_roles import resolve_web_role
 
-        role = resolve_web_role(request.headers)
+        role = await asyncio.to_thread(resolve_web_role, request.headers)
         if role is None:
             return JSONResponse(
                 {'error': '当前密钥没有分配数据角色，已拒绝查询'},
@@ -196,14 +196,15 @@ async def chat(request: Request):
                 # 阶段1: 计划生成
                 yield f"event: status\ndata: {json.dumps({'phase': 'planning', 'msg': '正在理解您的问题...'}, ensure_ascii=False)}\n\n"
 
-                # 执行编排器（复用 DingTalk 同一条管道）
+                # 编排器内部有同步的数据库和模型调用，放到线程里，避免堵住事件循环。
                 reply, metadata = await asyncio.wait_for(
-                    run_agent(
+                    asyncio.to_thread(
+                        _run_agent_blocking,
                         query,
-                        user_role=role,
-                        last_context=session.get('last_context'),
+                        role,
+                        session.get('last_context'),
                     ),
-                    timeout=120
+                    timeout=120,
                 )
 
                 # 清理 M3 SQL 标记
@@ -250,7 +251,8 @@ async def chat(request: Request):
                 if total_tokens > threshold:
                     logger.info(f"[Web] 触发上下文压缩: {total_tokens}/{128000} tokens")
                     try:
-                        comp_result = compact_conversation(
+                        comp_result = await asyncio.to_thread(
+                            compact_conversation,
                             messages=session['conversation_messages'],
                             session_id=session_id,
                             llm_client=None,  # TODO: wire up LLM client
@@ -330,40 +332,18 @@ async def scan_database(request: Request):
     _, rejected = _guard(request, admin=True)
     if rejected:
         return rejected
-    import json, asyncio
-    from tools.db_scanner import scan_database as do_scan
-
     async def generate():
         try:
             yield f"event: status\ndata: {json.dumps({'phase': 'scanning', 'msg': '正在连接数据库...'}, ensure_ascii=False)}\n\n"
-            
-            from tools.database_adapter import DatabaseAdapter
-            db = DatabaseAdapter.create()
-            
             yield f"event: status\ndata: {json.dumps({'phase': 'scanning', 'msg': '正在扫描表结构...'}, ensure_ascii=False)}\n\n"
-            
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, do_scan, db)
-            
+
+            data = await asyncio.to_thread(_scan_and_store)
+
             if 'error' in data:
                 yield f"event: error\ndata: {json.dumps({'error': data['error']}, ensure_ascii=False)}\n\n"
                 return
-            
-            # Save to config/data_dictionary.yml
-            import yaml, os
-            config_dir = os.path.join(os.path.dirname(__file__), 'config')
-            os.makedirs(config_dir, exist_ok=True)
-            output_path = os.path.join(config_dir, 'data_dictionary.yml')
-            
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(f"# Skadi Data Dictionary — 自动扫描生成\n")
-                f.write(f"# 扫描时间: {data.get('scanned_at', '')}\n")
-                f.write(f"# 数据库: {data['database']['name']}\n")
-                f.write(f"# 表数量: {data['table_count']}\n")
-                f.write(f"# role 默认为'未审核'，请根据业务需要调整\n")
-                f.write(f"# ===================================================================\n\n")
-                yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
+            # 字典文件已在线程里写完。这里刷新本进程的白名单和规划提示词。
             try:
                 from utils.pre_sql_hook import reload_allowed_tables
                 reloaded = reload_allowed_tables()
@@ -399,32 +379,28 @@ async def dictionary_status(request: Request):
     _, rejected = _guard(request, admin=False)
     if rejected:
         return rejected
-    import os
-    config_dir = os.path.join(os.path.dirname(__file__), 'config')
-    yml_path = os.path.join(config_dir, 'data_dictionary.yml')
-    example_path = os.path.join(config_dir, 'data_dictionary.example.yml')
-    
-    has_real = os.path.exists(yml_path)
-    is_example = False
-    if has_real:
-        with open(yml_path, 'r', encoding='utf-8') as f:
-            first_line = f.readline()
-            is_example = 'Example' in first_line or 'your_database' in first_line
-    
-    return JSONResponse({
-        'has_dictionary': has_real,
-        'is_example': is_example,
-        'path': yml_path,
-    })
+    status = await asyncio.to_thread(_dictionary_status)
+    return JSONResponse(status)
 
 
-@app.get("/health")
-async def health():
-    """健康检查"""
+def _health_payload() -> dict:
+    """不读取密钥、数据库口令或请求头。"""
     return {
         'status': 'ok',
         'skills_loaded': len(skill_registry.get_all()),
     }
+
+
+@app.get("/health")
+async def health():
+    """健康检查。无需认证，响应里没有配置。"""
+    return _health_payload()
+
+
+@app.get("/healthz")
+async def healthz():
+    """与 /health 相同，给只认 healthz 的探针用。"""
+    return _health_payload()
 
 
 # ============================================================
@@ -456,15 +432,51 @@ else:
 # 主入口
 # ============================================================
 
+def _run_agent_blocking(query: str, user_role: dict, last_context):
+    """在工作线程里另开事件循环，避免同步的数据库和模型调用堵住 FastAPI。"""
+    return asyncio.run(run_agent(query, user_role=user_role, last_context=last_context))
+
+
+def _scan_and_store() -> dict:
+    import yaml
+    from tools.database_adapter import DatabaseAdapter
+    from tools.db_scanner import scan_database as do_scan
+
+    db = DatabaseAdapter.create()
+    data = do_scan(db)
+    if 'error' in data:
+        return data
+    config_dir = os.path.join(os.path.dirname(__file__), 'config')
+    os.makedirs(config_dir, exist_ok=True)
+    output_path = os.path.join(config_dir, 'data_dictionary.yml')
+    with open(output_path, 'w', encoding='utf-8') as handle:
+        handle.write("# Skadi Data Dictionary — 自动扫描生成\n")
+        handle.write(f"# 扫描时间: {data.get('scanned_at', '')}\n")
+        handle.write(f"# 数据库: {data['database']['name']}\n")
+        handle.write(f"# 表数量: {data['table_count']}\n")
+        handle.write("# role 默认为'未审核'，请根据业务需要调整\n")
+        handle.write("# ===================================================================\n\n")
+        yaml.dump(data, handle, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    return data
+
+
+def _dictionary_status() -> dict:
+    config_dir = os.path.join(os.path.dirname(__file__), 'config')
+    yml_path = os.path.join(config_dir, 'data_dictionary.yml')
+    has_real = os.path.exists(yml_path)
+    is_example = False
+    if has_real:
+        with open(yml_path, 'r', encoding='utf-8') as handle:
+            first_line = handle.readline()
+            is_example = 'Example' in first_line or 'your_database' in first_line
+    return {
+        'has_dictionary': has_real,
+        'is_example': is_example,
+        'path': yml_path,
+    }
+
+
 if __name__ == '__main__':
-    import uvicorn
-    # 直接运行时默认只监听本机。容器内需要被端口映射访问时再设 WEB_BIND_HOST=0.0.0.0。
-    bind_host = os.getenv("WEB_BIND_HOST", "127.0.0.1")
-    bind_port = int(os.getenv("WEB_PORT", "8080"))
-    uvicorn.run(
-        "web_server:app",
-        host=bind_host,
-        port=bind_port,
-        reload=False,
-        log_level="info",
-    )
+    from config.entrypoint import main
+
+    main(["web"])

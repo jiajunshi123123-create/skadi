@@ -1,6 +1,6 @@
 #!/opt/venv/bin/python3
 """StarRocks安全查询 v2 — EXPLAIN校验 + 执行"""
-import os, sys, pymysql
+import sys, pymysql
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -10,26 +10,20 @@ if str(_ROOT) not in sys.path:
 from tools.database_adapter import apply_mysql_readonly_session
 from utils.sql_safety import check_readonly_sql
 
-def _env(*names: str) -> str:
-    for name in names:
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    return ""
+from config.env_settings import read_setting
 
-
-DB = sys.argv[1] if len(sys.argv) > 1 else _env("STARROCKS_DB", "DB_NAME")
+DB = sys.argv[1] if len(sys.argv) > 1 else read_setting("DB_NAME", "STARROCKS_DB")
 SQL = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
 if not SQL:
     print("Usage: starrocks_query_safe.py <db> <SQL>")
     sys.exit(1)
 
-HOST = _env("STARROCKS_HOST", "DB_HOST")
-USER = _env("STARROCKS_USER", "DB_USER")
-PASS = _env("STARROCKS_PASSWORD", "DB_PASSWORD")
-PORT = int(_env("STARROCKS_PORT", "DB_PORT") or "9030")
+HOST = read_setting("DB_HOST", "STARROCKS_HOST")
+USER = read_setting("DB_USER", "STARROCKS_USER")
+PASS = read_setting("DB_PASSWORD", "STARROCKS_PASSWORD")
+PORT = int(read_setting("DB_PORT", "STARROCKS_PORT", default="9030"))
 if not HOST or not USER or not DB:
-    print("REJECTED: 缺少数据库地址、用户或库名，请设置 STARROCKS_* 或 DB_*")
+    print("REJECTED: 缺少数据库地址、用户或库名，请设置 DB_*（STARROCKS_* 已弃用）")
     sys.exit(1)
 
 CONN = {

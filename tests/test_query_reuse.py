@@ -385,7 +385,7 @@ class WebRoleTests(unittest.TestCase):
         ))
         web = (ROOT / "web_server.py").read_text(encoding="utf-8")
         self.assertIn("resolve_web_role", web)
-        self.assertIn("last_context=session.get('last_context')", web)
+        self.assertIn("session.get('last_context')", web)
 
 
 class _StubDb:

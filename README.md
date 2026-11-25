@@ -101,7 +101,13 @@ curl -N -H "X-API-Key: $WEB_API_KEY" -H 'Content-Type: application/json' \
 | `EMBEDDING_MODEL` | 中文向量模型，默认 `BAAI/bge-small-zh-v1.5`。`EMBEDDING_BACKEND=hash` 时不下载 |
 | `WEB_BIND_HOST` | `python web_server.py` 的监听地址，默认 `127.0.0.1` |
 | `SQL_HOOK_STRICT_MODE` | 默认 `true`。为 true 时 `SELECT *`、未登记表、笛卡尔积等警告也会阻止执行 |
-| `PG_PASSWORD` | Compose 启动 Postgres 所必需，至少 12 位，拒绝 `changeme` 等占位符 |
+| `PG_PASSWORD` | Compose 启动 Postgres 所必需，至少 12 位，拒绝 `changeme` 等占位符。旧名 `PGPASSWORD` 仍可读，启动时会警告 |
+| `PG_DATABASE` | 经验库库名。旧名 `PG_DB`、`PGDATABASE` 仍可读 |
+| `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | 分析库连接。旧名 `STARROCKS_HOST`、`STARROCKS_USER`、`STARROCKS_PASSWORD`、`STARROCKS_DB` 仍可读 |
+
+Web、钉钉、飞书三个入口在启动时检查各自必需的变量。缺一项或仍是 `.env.example` 里的占位符时，进程直接退出，并把缺的名字一次列出来，不会打印变量的值。Web 还要求 `WEB_API_KEY_ROLES`。
+
+`GET /health` 和 `GET /healthz` 不需要密钥，响应里只有状态和已加载技能数量。钉钉和飞书不监听端口，容器健康检查读 `/tmp/skadi-heartbeat`。
 | `DB_USER` | 请使用只有 `SELECT` 权限的账号 |
 
 分析库账号不要用 `root`。Postgres 与 Chroma 在 `docker-compose.yml` 里不再映射到宿主机端口；Web 端口默认只绑定 `127.0.0.1:8080`。容器内进程仍监听 `0.0.0.0`，否则 Docker 端口映射无法转发。

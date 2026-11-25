@@ -32,16 +32,41 @@ class WebApiAuthTests(unittest.TestCase):
         reset_for_tests()
         web_server._session_contexts.clear()
 
-        async def fake_run_agent(query):
+        async def fake_run_agent(query, user_role=None, last_context=None):
             return f"echo:{query}", {}
 
         self._original_run_agent = web_server.run_agent
         web_server.run_agent = fake_run_agent
+        os.environ["WEB_API_KEY_ROLES"] = (
+            "user-key-0123456789abcdef=analyst,"
+            "second-user-key-0123456789=analyst"
+        )
+        import utils.web_roles as web_roles
+
+        def fake_resolve(headers, loader=None):
+            role_id = web_roles.match_role_id(web_roles._presented_user_key(headers))
+            if not role_id:
+                return None
+            return {
+                "role_id": role_id,
+                "role_name": "分析师",
+                "allowed_tables": ["events"],
+                "mandatory_filters": {},
+                "allow_user_detail": True,
+                "staff_id": "web:" + role_id,
+                "staff_name": "测试",
+                "max_query_days": 30,
+            }
+
+        self._original_resolve = web_roles.resolve_web_role
+        self._web_roles = web_roles
+        web_roles.resolve_web_role = fake_resolve
         self.client = TestClient(web_server.app)
         self.client.__enter__()
 
     def tearDown(self):
         web_server.run_agent = self._original_run_agent
+        self._web_roles.resolve_web_role = self._original_resolve
         self.client.__exit__(None, None, None)
         web_server._session_contexts.clear()
         reset_for_tests()

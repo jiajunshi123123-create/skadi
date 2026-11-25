@@ -12,6 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from config.env_settings import read_setting
 from utils.sql_safety import check_readonly_sql
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ class DatabaseAdapter(ABC):
     @staticmethod
     def create(db_type: str = None) -> 'DatabaseAdapter':
         """工厂方法：根据配置创建对应适配器"""
-        db_type = (db_type or os.getenv('DB_TYPE', 'mysql')).lower().strip()
+        db_type = (db_type or read_setting('DB_TYPE', default='mysql')).lower().strip()
         if db_type == 'mysql':
             return MySQLAdapter()
         elif db_type == 'starrocks':
@@ -67,11 +68,11 @@ class DatabaseAdapter(ABC):
     def _get_connection_config(self) -> dict:
         """从环境变量读取连接配置"""
         return {
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'port': int(os.getenv('DB_PORT', self._default_port())),
-            'user': os.getenv('DB_USER', ''),
-            'password': os.getenv('DB_PASSWORD', ''),
-            'database': os.getenv('DB_NAME', ''),
+            'host': read_setting('DB_HOST', 'STARROCKS_HOST', default='localhost'),
+            'port': int(read_setting('DB_PORT', 'STARROCKS_PORT', default=self._default_port())),
+            'user': read_setting('DB_USER', 'STARROCKS_USER', default=''),
+            'password': read_setting('DB_PASSWORD', 'STARROCKS_PASSWORD', default=''),
+            'database': read_setting('DB_NAME', 'STARROCKS_DB', default=''),
         }
 
     def _default_port(self) -> str:
