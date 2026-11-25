@@ -118,7 +118,7 @@ def reload_allowed_tables() -> set:
     logger.info("[PreSQLHook] 表白名单已刷新: %d", len(ALLOWED_TABLES))
     return ALLOWED_TABLES
 
-# 表名别名映射（edu前缀 = 生产环境）
+# 表名别名映射（数据字典不可用时的回退物理表名）
 TABLE_ALIASES = {
     'dayi': 'dws_edu_dayi_user_login_daily_stats',
     'new_users': 'dws_edu_mrg_usr_new_user_count',

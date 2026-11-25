@@ -297,7 +297,7 @@ class QueryAgent:
 数据字典参考:
 - table_dau_events: dt_utc(DATETIME分区键), user_id, raw_event_name, std_event_name, event_value
 - table_core_behavior: dt_utc(DATETIME分区键), user_id, event_cnt, user_cnt
-- table_product_usage: dt(DATETIME分区键), uid(不是user_id), books_id(不是book_id), name(书名，事实表内嵌)
+- table_product_usage: dt(DATETIME分区键), uid(不是user_id), product_id, name(产品名，事实表内嵌)
 - table_new_users: date(DATE分区键), user_id
 
 请只输出修正后的SQL（纯SQL，不要包含解释文字或代码块标记）。

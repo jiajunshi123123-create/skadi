@@ -87,7 +87,7 @@ tables:
   # Table 3: Core behavior daily aggregates
   # -----------------------------------------------------------------
   - name: table_core_behavior
-    description: "Core behavior aggregates (e.g. exercises, reading, check-ins)"
+    description: "Core behavior aggregates (e.g. purchases, browsing, sign-ins)"
     partition_key: dt_utc
     partition_type: DATETIME
     has_today_data: false

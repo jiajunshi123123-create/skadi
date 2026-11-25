@@ -185,9 +185,9 @@ class FeedbackLoop:
             keywords.append('日活')
         if any(w in query for w in ['新增', '注册', '新用户']):
             keywords.append('新增用户')
-        if any(w in query for w in ['图书', '答疑']):
-            keywords.append('图书答疑')
-        if any(w in query for w in ['核心', '行为', '做题', '阅读']):
+        if any(w in query for w in ['产品', '商品', '内容']):
+            keywords.append('产品使用')
+        if any(w in query for w in ['核心', '行为', '下单', '浏览']):
             keywords.append('核心行为')
         if any(w in query for w in ['渠道', '来源']):
             keywords.append('渠道分析')

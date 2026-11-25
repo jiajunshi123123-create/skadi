@@ -368,7 +368,7 @@ class PatternStore:
 
         当两个模式关键词相似但SQL结构不同时，可能存在口径冲突。
         例如：
-        - 模式A: "单日查询+日活" → SELECT FROM dws_biz_dayi_user_login_daily_stats
+        - 模式A: "单日查询+日活" → SELECT FROM dws_biz_dau_daily_stats
         - 模式B: "单日查询+日活" → SELECT FROM qb_event_log  (冲突!)
 
         Args:

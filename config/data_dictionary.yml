@@ -2,7 +2,7 @@
 # Skadi Data Dictionary v2 — 基于业务分析卡片知识库
 # ===================================================================
 # 来源: cards/ (7张业务分析卡片)
-# 覆盖: 用户/留存/会员/图书/答疑/营收/广告 七大业务域
+# 覆盖: 用户/留存/会员/产品/互动/营收/广告 七大业务域
 # 42张已审核表，含数据源合约（必用/禁用/辅助）
 
 database:
@@ -42,7 +42,7 @@ tables:
       weekday_avg: 7200
       weekend_avg: 14000
       monday_avg: 8240
-      description: "K12教育产品，30天均值约1.17万。周末(周六日)显著高于工作日(周一至周五~7200)。周一略高(8240)因周末回流。对比时使用同星期几基线而非全局均值。"
+      description: "业务日活，30天均值约1.17万。周末(周六日)显著高于工作日(周一至周五~7200)。周一略高(8240)。对比时使用同星期几基线而非全局均值。"
 
   - name: ods_edu_ubb_usr_app_user_user
     domain: 用户
@@ -60,7 +60,7 @@ tables:
         description: "省份"
       - name: grade_id
         type: INT
-        description: "年级ID"
+        description: "分层ID"
       - name: created_time
         type: DATETIME
         description: "注册时间"
@@ -126,25 +126,25 @@ tables:
   - name: ads_edu_tifen_active_user_lost_cycle
     domain: 留存
     role: 辅助
-    description: "提分智教用户流失分析，N行"
+    description: "业务线用户流失分析，N行"
 
   - name: dws_edu_tifen_user_active_lifecycle_daily
     domain: 留存
     role: 辅助
-    description: "提分智教用户生命周期日表"
+    description: "业务线用户生命周期日表"
 
   - name: dws_edu_qna_user_retention_daily
     domain: 留存
     role: 辅助
-    description: "答疑用户留存，N行"
+    description: "互动用户留存，N行"
 
   # ===================================================================
-  # 3. 提分智教会员
+  # 3. 会员
   # ===================================================================
   - name: dwd_edu_ubb_usr_tifen_member
     domain: 会员
     role: 必用
-    description: "提分智教会员明细(DWD)。user_id + member_type + start_date + end_date"
+    description: "会员明细(DWD)。user_id + member_type + start_date + end_date"
     fields:
       - name: user_id
         type: BIGINT
@@ -172,17 +172,17 @@ tables:
   - name: dws_edu_learning_progress_summary_d
     domain: 会员
     role: 辅助
-    description: "学习进度汇总，N行"
+    description: "使用进度汇总，N行"
 
   - name: dwd_edu_tifen_zbk_learning_progress
     domain: 会员
     role: 辅助
-    description: "中考帮学习进度，N行"
+    description: "业务进度明细，N行"
 
   - name: dwd_edu_tifen_app_exam_paper
     domain: 会员
     role: 辅助
-    description: "试卷使用记录，N行"
+    description: "内容使用记录，N行"
 
   - name: ods_edu_ubb_mkt_homework_prod_member_change
     domain: 会员
@@ -190,16 +190,16 @@ tables:
     description: "会员变更流水"
 
   # ===================================================================
-  # 4. 图书激活
+  # 4. 产品激活
   # ===================================================================
   - name: ods_edu_ubb_bhv_homework_prod_books_user
-    domain: 图书
+    domain: 产品
     role: 必用
-    description: "用户图书激活，N行。books_id + yid(用户) + is_start_rights"
+    description: "用户产品激活，N行。books_id + yid(用户) + is_start_rights"
     fields:
       - name: books_id
         type: BIGINT
-        description: "图书ID"
+        description: "产品ID"
       - name: yid
         type: VARCHAR
         description: "用户标识(注意:不是user_id)"
@@ -211,37 +211,37 @@ tables:
         description: "激活时间"
 
   - name: ods_edu_ubb_smt_homework_prod_books
-    domain: 图书
+    domain: 产品
     role: 必用
-    description: "图书主表。id + name + grade_name + study_stage_name"
+    description: "产品主表。id + name + grade_name + study_stage_name"
 
   - name: ods_edu_ubb_ord_homework_prod_books_activation_code
-    domain: 图书
+    domain: 产品
     role: 辅助
     description: "激活码明细，N行"
 
   - name: dws_edu_ubb_bhv_user_book_funnel_status
-    domain: 图书
+    domain: 产品
     role: 辅助
-    description: "图书转化漏斗(DWS汇总)"
+    description: "产品转化漏斗(DWS汇总)"
 
   - name: dwd_edu_mrg_bhv_books_user_detail
-    domain: 图书
+    domain: 产品
     role: 辅助
-    description: "图书用户明细宽表"
+    description: "产品用户明细宽表"
 
   - name: dws_edu_ubb_bhv_book_right_usernum
-    domain: 图书
+    domain: 产品
     role: 禁用
     description: "⚠️ 权益汇总表，仅N行！不可按series拆分"
 
   # ===================================================================
-  # 5. 答疑
+  # 5. 互动会话
   # ===================================================================
   - name: dwd_edu_bhv_manual_answer_session_combined
-    domain: 答疑
+    domain: 互动
     role: 必用
-    description: "答疑会话宽表(优先使用，替代ODS)。user_id + session_id + duration"
+    description: "会话宽表(优先使用，替代ODS)。user_id + session_id + duration"
     fields:
       - name: user_id
         type: BIGINT
@@ -255,24 +255,24 @@ tables:
         description: "会话时长"
 
   - name: dwd_edu_ubb_ord_answer_purchase_detail
-    domain: 答疑
+    domain: 互动
     role: 必用
-    description: "答疑购买明细。user_id + order_no + amount"
+    description: "服务购买明细。user_id + order_no + amount"
 
   - name: dwd_edu_ubb_ord_answer_refund_detail
-    domain: 答疑
+    domain: 互动
     role: 辅助
-    description: "答疑退款明细(含user_id，与通用退款表不同)"
+    description: "服务退款明细(含user_id，与通用退款表不同)"
 
   - name: dws_edu_ubb_answer_pay_path_detail
-    domain: 答疑
+    domain: 互动
     role: 辅助
-    description: "答疑付费路径。user_id + pay_path + step"
+    description: "付费路径。user_id + pay_path + step"
 
   - name: dws_edu_dayi_user_login_daily_stats
-    domain: 答疑
+    domain: 互动
     role: 辅助
-    description: "答疑用户登录日统计"
+    description: "互动用户登录日统计"
 
   # ===================================================================
   # 6. 营收
@@ -352,14 +352,14 @@ business_rules:
   - rule: "退款表无user_id"
     detail: "dwd_edu_mrg_mkt_goods_refund_order 无user_id列。按用户分析退款需 JOIN dwd_edu_mrg_mkt_order_date ON order_no"
     severity: critical
-  - rule: "图书用户标识非user_id"
+  - rule: "产品表用户标识非user_id"
     detail: "ods_edu_ubb_bhv_homework_prod_books_user 的用户列名为 yid，不是 user_id"
     severity: warning
   - rule: "权益汇总表不可拆分"
     detail: "dws_edu_ubb_bhv_book_right_usernum 仅N行汇总数据，不可按系列/时间拆分。用 ods_edu_ubb_bhv_homework_prod_books_user 替代(412万行)"
     severity: critical
   - rule: "优先用DWD宽表而非ODS原始表"
-    detail: "答疑分析优先用 dwd_edu_bhv_manual_answer_session_combined，而非 ods_edu_ubb_bhv_app_answer_question_t_session_message(214万行ODS)"
+    detail: "会话分析优先用 dwd_edu_bhv_manual_answer_session_combined，而非 ods_edu_ubb_bhv_app_answer_question_t_session_message(214万行ODS)"
     severity: info
   - rule: "用户流失用预计算表"
     detail: "优先使用 ads_app_user_lost_cycle(190万行)，已预计算流失周期"

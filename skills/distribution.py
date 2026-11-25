@@ -5,7 +5,7 @@ from .base import AnalysisSkill
 class DistributionSkill(AnalysisSkill):
     name = "分布分析"
     description = "分析数据的分布形态（正态/偏态）、集中度和离散程度"
-    keywords = ["分布", "集中", "分散", "分位数", "中位数", "均值", "长尾", "头部的", "占比", "分省", "分地域", "分年级", "分科目", "分组", "结构", "构成", "比例", "排行榜", "分级"]
+    keywords = ["分布", "集中", "分散", "分位数", "中位数", "均值", "长尾", "头部的", "占比", "分省", "分地域", "分渠道", "分品类", "分组", "结构", "构成", "比例", "排行榜", "分级"]
     category = "statistical"
     priority = 3
 
