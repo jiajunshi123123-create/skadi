@@ -23,3 +23,8 @@ lark-oapi==1.8.0
 # Utilities
 aiohttp>=3.9.0
 PyYAML>=6.0
+
+# SQL permission rewrite. Pinned so CTE extraction stays compatible.
+sqlglot==25.34.0
+# Chinese embeddings for query reuse. First use downloads EMBEDDING_MODEL.
+sentence-transformers==3.3.1

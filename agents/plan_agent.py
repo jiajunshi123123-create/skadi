@@ -92,30 +92,23 @@ class PlanAgent:
         history_context = ""
         try:
             from learning.feedback_loop import feedback_loop
-            context = feedback_loop.get_context_for_query(user_query)
+            role_id = user_role.get('role_id') if user_role else None
+            context = feedback_loop.get_context_for_query(user_query, role_id=role_id)
             if context:
+                from learning.plan_context import format_lessons, format_similar_patterns
+
                 parts = []
-                # 注入相似模式
-                if context.get('similar_patterns'):
-                    p = context['similar_patterns']
-                    parts.append(
-                        f"## 相似历史查询模式\n"
-                        f"- 关键词: {p.get('trigger_keywords', [])}\n"
-                        f"- 历史SQL: {p.get('common_sql', [''])[0][:300]}\n"
-                        f"- 成熟度: {p.get('maturity', 0)}"
-                    )
-                # 注入RAG知识
+                pattern_text = format_similar_patterns(context.get('similar_patterns'))
+                if pattern_text:
+                    parts.append(pattern_text)
                 if context.get('rag_results'):
                     rag_text = "\n".join(
                         [r.get('content', '')[:200] for r in context['rag_results'][:2]]
                     )
                     parts.append(f"## 相关知识库条目\n{rag_text}")
-                # 注入近期教训
-                if context.get('recent_lessons'):
-                    lessons_text = "\n".join(
-                        [l.get('lesson_text', '')[:150] for l in context['recent_lessons'][:3]]
-                    )
-                    parts.append(f"## 历史教训\n{lessons_text}")
+                lesson_text = format_lessons(context.get('recent_lessons'))
+                if lesson_text:
+                    parts.append(lesson_text)
                 if parts:
                     history_context = "\n\n".join(parts)
                     logger.info(f"[PlanAgent] 注入历史经验上下文: {len(history_context)} 字符")

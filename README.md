@@ -96,6 +96,9 @@ curl -N -H "X-API-Key: $WEB_API_KEY" -H 'Content-Type: application/json' \
 | `WEB_ADMIN_RATE_LIMIT_PER_MINUTE` | 扫描接口限流，默认 5 |
 | `WEB_AUTH_FAILURE_LIMIT_PER_MINUTE` | 同一 IP 认证失败次数，默认 10 |
 | `BOT_RATE_LIMIT_PER_MINUTE` | 每个钉钉用户每分钟可发的消息数，默认 30 |
+| `WEB_API_KEY_ROLES` | Web 密钥到 `role_id` 的映射，形如 `密钥=analyst`。没有映射的密钥不能查询 |
+| `QUERY_CACHE_SIMILARITY` | 查询复用的相似度阈值，默认 0.85。只复用 `verified` 的 SQL，并重新查库 |
+| `EMBEDDING_MODEL` | 中文向量模型，默认 `BAAI/bge-small-zh-v1.5`。`EMBEDDING_BACKEND=hash` 时不下载 |
 | `WEB_BIND_HOST` | `python web_server.py` 的监听地址，默认 `127.0.0.1` |
 | `SQL_HOOK_STRICT_MODE` | 默认 `true`。为 true 时 `SELECT *`、未登记表、笛卡尔积等警告也会阻止执行 |
 | `PG_PASSWORD` | Compose 启动 Postgres 所必需，至少 12 位，拒绝 `changeme` 等占位符 |

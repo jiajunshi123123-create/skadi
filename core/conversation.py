@@ -226,6 +226,7 @@ class ConversationService:
             "last_result_summary": (visible or "")[:200],
             "last_analysis": (metadata.get("analysis") or visible or "")[:500],
             "last_user_query": message_text,
+            "cache_id": (metadata.get("plan_task") or {}).get("cache_id"),
             "saved_at": self.clock(),
         }
         self._contexts[user.user_id] = context
@@ -341,3 +342,12 @@ def _default_on_feedback(user: ResolvedUser, polarity: str, context: dict) -> No
         analysis=context.get("last_analysis") or "",
         feedback=polarity,
     )
+    cache_id = context.get("cache_id")
+    if not cache_id:
+        return
+    try:
+        from learning.query_cache import query_cache
+
+        query_cache.record_vote(int(cache_id), polarity)
+    except Exception:
+        logger.exception("查询缓存的赞踩没有写入 cache_id=%s", cache_id)

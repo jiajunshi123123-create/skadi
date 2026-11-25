@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS lessons (
     original_query  TEXT,
     problem         TEXT,
     solution        TEXT,
+    table_name      VARCHAR(128),
+    error_type      VARCHAR(64),
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -172,3 +174,28 @@ CREATE TABLE IF NOT EXISTS context_anchors (
 
 CREATE INDEX IF NOT EXISTS idx_context_anchors_session
     ON context_anchors(session_id, compressed_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- 查询复用。命中后只复用 SQL 模板，执行时重新取数。
+-- status: candidate 未验证 / verified 可复用 / disabled 停用
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS query_cache (
+    id                SERIAL PRIMARY KEY,
+    normalized_q      TEXT NOT NULL,
+    params_template   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    embedding         JSONB,
+    sql_template      TEXT NOT NULL,
+    role_scope        VARCHAR(64) NOT NULL,
+    tables            TEXT[] NOT NULL DEFAULT '{}',
+    success_cnt       INTEGER NOT NULL DEFAULT 0,
+    up_cnt            INTEGER NOT NULL DEFAULT 0,
+    down_cnt          INTEGER NOT NULL DEFAULT 0,
+    status            VARCHAR(16) NOT NULL DEFAULT 'candidate',
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT query_cache_status_check
+        CHECK (status IN ('candidate', 'verified', 'disabled'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_cache_role_status
+    ON query_cache(role_scope, status);

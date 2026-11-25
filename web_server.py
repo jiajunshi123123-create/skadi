@@ -178,6 +178,15 @@ async def chat(request: Request):
                 status_code=400,
             )
 
+        from utils.web_roles import resolve_web_role
+
+        role = resolve_web_role(request.headers)
+        if role is None:
+            return JSONResponse(
+                {'error': '当前密钥没有分配数据角色，已拒绝查询'},
+                status_code=403,
+            )
+
         session = _get_or_create_session(session_id)
 
         async def generate():
@@ -189,7 +198,11 @@ async def chat(request: Request):
 
                 # 执行编排器（复用 DingTalk 同一条管道）
                 reply, metadata = await asyncio.wait_for(
-                    run_agent(query),
+                    run_agent(
+                        query,
+                        user_role=role,
+                        last_context=session.get('last_context'),
+                    ),
                     timeout=120
                 )
 

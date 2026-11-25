@@ -11,6 +11,26 @@ import chromadb
 
 logger = logging.getLogger(__name__)
 
+
+class _ConfiguredEmbedding:
+    """Chroma 调用的向量函数。EMBEDDING_BACKEND=auto 时优先中文模型。"""
+
+    def __call__(self, input):
+        from learning.embeddings import embed_text
+
+        return [embed_text(text) for text in input]
+
+    def embed_documents(self, texts):
+        return self.__call__(texts)
+
+    def embed_query(self, text):
+        if isinstance(text, list):
+            return self.__call__(text)
+        return self.__call__([text])[0]
+
+    def name(self):
+        return "skadi-configured"
+
 # 知识库路径：项目根目录/knowledge/chroma_db/
 CHROMA_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -28,14 +48,17 @@ class RAGTool:
         self.client = chromadb.PersistentClient(path=self.db_path)
 
     def get_or_create_collection(self, name: str = 'enterprise_knowledge'):
-        """获取或创建知识库集合"""
-        return self.client.get_or_create_collection(
-            name=name,
-            metadata={"description": "Enterprise数据AI Agent知识库"}
-        )
+        """获取或创建知识库集合。角色案例使用可配置的中文向量，不用默认英文模型。"""
+        kwargs = {
+            "name": name,
+            "metadata": {"description": "Enterprise数据AI Agent知识库"},
+        }
+        if name == "role_cases":
+            kwargs["embedding_function"] = _ConfiguredEmbedding()
+        return self.client.get_or_create_collection(**kwargs)
 
     def search(self, query: str, n_results: int = 3,
-               collection_name: str = 'enterprise_knowledge') -> list:
+               collection_name: str = 'enterprise_knowledge', where: dict = None) -> list:
         """
         语义检索相似文档。
 
@@ -51,10 +74,13 @@ class RAGTool:
             collection = self.get_or_create_collection(collection_name)
             if collection.count() == 0:
                 return []
-            results = collection.query(
-                query_texts=[query],
-                n_results=min(n_results, collection.count())
-            )
+            query_kwargs = {
+                'query_texts': [query],
+                'n_results': min(n_results, collection.count()),
+            }
+            if where:
+                query_kwargs['where'] = where
+            results = collection.query(**query_kwargs)
             return self._format_results(results)
         except Exception as e:
             logger.error(f"[RAG] 检索失败: {e}")

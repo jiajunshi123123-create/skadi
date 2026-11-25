@@ -68,3 +68,5 @@ VALUES ('dingtalk', '钉钉senderStaffId', 'u-001', '姓名');
 未配置身份，或身份对应的权限已停用、已过期，机器人会回复拒绝说明并带上对方的渠道 ID，不会执行查询。
 
 改完权限后，进程内缓存大约 5 分钟过期；需要立即生效时重启对应服务。
+
+同一份 `migrate.sql` 还会给 `lessons` 补上 `table_name`、`error_type`，并创建 `query_cache`。查询复用只跳过规划，命中后仍会按当前时间参数重新执行 SQL。Web 调用方还要在 `.env` 里配置 `WEB_API_KEY_ROLES`，否则密钥即使有效也不能查询。

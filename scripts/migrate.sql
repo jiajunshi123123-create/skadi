@@ -171,7 +171,31 @@ BEGIN
     END IF;
 END $$;
 
+ALTER TABLE lessons ADD COLUMN IF NOT EXISTS table_name VARCHAR(128);
+ALTER TABLE lessons ADD COLUMN IF NOT EXISTS error_type VARCHAR(64);
+
 CREATE INDEX IF NOT EXISTS idx_lessons_type_created ON lessons(lesson_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS query_cache (
+    id                SERIAL PRIMARY KEY,
+    normalized_q      TEXT NOT NULL,
+    params_template   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    embedding         JSONB,
+    sql_template      TEXT NOT NULL,
+    role_scope        VARCHAR(64) NOT NULL,
+    tables            TEXT[] NOT NULL DEFAULT '{}',
+    success_cnt       INTEGER NOT NULL DEFAULT 0,
+    up_cnt            INTEGER NOT NULL DEFAULT 0,
+    down_cnt          INTEGER NOT NULL DEFAULT 0,
+    status            VARCHAR(16) NOT NULL DEFAULT 'candidate',
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT query_cache_status_check
+        CHECK (status IN ('candidate', 'verified', 'disabled'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_cache_role_status
+    ON query_cache(role_scope, status);
 
 CREATE TABLE IF NOT EXISTS role_definitions (
     role_id             VARCHAR(64) PRIMARY KEY,
