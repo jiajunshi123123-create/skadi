@@ -19,6 +19,22 @@ services:
       - ./logs:/app/logs
       - ./config:/app/config
 
+  # ========== 飞书 Bot（长连接，只处理私聊） ==========
+  feishu:
+    build: .
+    container_name: ai-data-feishu
+    env_file: .env
+    command: python -m channels.feishu
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+
   # ========== 钉钉 Bot 服务 ==========
   agent:
     build: .

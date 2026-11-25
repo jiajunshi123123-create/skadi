@@ -16,6 +16,9 @@ chromadb>=0.4.0
 
 # Messaging (DingTalk - replaceable)
 dingtalk-stream>=0.10.0
+# Feishu / Lark long-connection bot. Pinned: 1.8.0 drops CARD frames,
+# channels/feishu.py patches that behavior for this version.
+lark-oapi==1.8.0
 
 # Utilities
 aiohttp>=3.9.0

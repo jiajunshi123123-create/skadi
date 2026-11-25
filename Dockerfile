@@ -31,4 +31,5 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
 # 用法:
 #   Web 服务:   docker run ... (默认)
 #   钉钉 Bot:   docker run ... python dingtalk_bot.py
+#   飞书 Bot:   docker run ... python -m channels.feishu
 CMD ["python", "-m", "uvicorn", "web_server:app", "--host", "0.0.0.0", "--port", "8080"]

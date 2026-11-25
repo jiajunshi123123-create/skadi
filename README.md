@@ -26,10 +26,40 @@
 | `knowledge/statistical_methods.py` | 17种统计方法知识库 |
 | `learning/` | 自学习系统(PatternStore + Memory) |
 
-## 双通道
+## 入口
 
 - **Web**: FastAPI + SSE 流式, `python web_server.py` 后访问 `localhost:8080`
 - **DingTalk Bot**: `python dingtalk_bot.py`
+- **飞书 Bot**: `python -m channels.feishu`（长连接，只处理私聊）
+
+## 飞书机器人
+
+飞书通道只回答私聊。群消息直接丢掉，不回复。用户的 `open_id` 必须先写进 `user_identities`（`channel='feishu'`），并对应一条仍有效的 `user_permissions`，否则会被拒绝。
+
+处理一条私聊时，机器人先发一张「正在分析」的交互卡片，分析在后台进行，完成后用 PATCH 更新同一张卡片。卡片底部有 👍 / 👎，点击后记入现有反馈。
+
+### 在飞书开放平台创建应用
+
+1. 打开 [飞书开放平台](https://open.feishu.cn/app) 创建企业自建应用，启用「机器人」能力。
+2. 在「权限管理」开通下面的权限，然后创建并发布版本。权限不发布就不会生效。
+   - `im:message.p2p_msg:readonly`：读取用户发给机器人的单聊消息（事件 `im.message.receive_v1`）
+   - `im:message:send_as_bot`：以应用身份发消息
+   - `im:message`：获取与发送单聊、群组消息。更新已经发出的卡片（`PATCH /open-apis/im/v1/messages/:message_id`）需要它
+3. 「事件与回调」里把订阅方式选成 **使用长连接接收事件 / 回调**。不要同时配请求地址。需要订阅：
+   - 事件 `im.message.receive_v1`（接收消息）
+   - 回调 `card.action.trigger`（卡片按钮回传）
+4. 长连接要求保存订阅时客户端已经在线。先在服务器启动 `python -m channels.feishu`（或 `docker-compose up -d feishu`），再回到开放平台保存订阅。
+5. 把应用的 App ID、App Secret 写入 `.env` 的 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`。不要把这两个值提交进仓库。
+6. 把允许使用的人写进经验库。`external_id` 是对方的 `open_id`（形如 `ou_...`），可以先让对方给机器人发一句，再从拒绝回复里复制：
+
+```sql
+INSERT INTO user_identities (channel, external_id, user_id, display_name)
+VALUES ('feishu', 'ou_xxx', 'u-001', '姓名');
+```
+
+`u-001` 必须已经在 `user_permissions` 里，并且角色允许他要查的表。
+
+可用 `FEISHU_WORKERS` 调整同时分析的后台线程数，默认 4。
 
 ## 部署
 
