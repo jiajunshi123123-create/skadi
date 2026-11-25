@@ -82,7 +82,13 @@ analysis_agent = AnalysisAgent()
 # ============================================================
 
 def _lookup_cached_plan(state: dict):
-    """已验证且当前角色可读全部表时，跳过规划，返回填好参数的 SQL。"""
+    """已验证且当前角色可读全部表时，跳过规划，返回填好参数的 SQL。
+
+    追问带着上一轮上下文，同一句短话在不同上下文里指的不是同一条 SQL。
+    last_context 非空时不读缓存，继续走规划。
+    """
+    if state.get("last_context"):
+        return None
     role = state.get("user_role") or {}
     role_id = role.get("role_id")
     if not role_id:
@@ -118,7 +124,10 @@ def _remember_query_cache(state: dict, query_result: dict):
     存的是注入强制条件之前的 SQL。命中后 QueryAgent 再按当前角色注入，
     避免条件写两遍，角色的 mandatory_filters 变了也不会沿用旧条件。
     返回的 id 给赞踩和后续成功计数用；candidate 靠这个 id 才能升成 verified。
+    追问（last_context 非空）不写缓存，避免「按渠道拆分」这类短句升成 verified 后被所有人复用。
     """
+    if state.get("last_context"):
+        return None
     role = state.get("user_role") or {}
     role_id = role.get("role_id") or ""
     plan = state.get("plan_task") if isinstance(state.get("plan_task"), dict) else {}

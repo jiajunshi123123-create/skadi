@@ -197,6 +197,31 @@ CREATE TABLE IF NOT EXISTS query_cache (
 CREATE INDEX IF NOT EXISTS idx_query_cache_role_status
     ON query_cache(role_scope, status);
 
+-- 并发首次成功可能已经插入了多行。唯一索引要求每个 (role_scope, normalized_q) 只留一行：
+-- verified 优先，其次 success_cnt 高，其次 id 小。可以重复执行。
+DELETE FROM query_cache
+WHERE id IN (
+    SELECT id FROM (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY role_scope, normalized_q
+                   ORDER BY
+                       CASE status
+                           WHEN 'verified' THEN 0
+                           WHEN 'candidate' THEN 1
+                           ELSE 2
+                       END,
+                       success_cnt DESC,
+                       id ASC
+               ) AS rn
+        FROM query_cache
+    ) ranked
+    WHERE rn > 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_query_cache_role_normalized_q
+    ON query_cache(role_scope, normalized_q);
+
 CREATE TABLE IF NOT EXISTS role_definitions (
     role_id             VARCHAR(64) PRIMARY KEY,
     role_name           VARCHAR(128) NOT NULL,

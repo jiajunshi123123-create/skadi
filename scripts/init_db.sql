@@ -199,3 +199,7 @@ CREATE TABLE IF NOT EXISTS query_cache (
 
 CREATE INDEX IF NOT EXISTS idx_query_cache_role_status
     ON query_cache(role_scope, status);
+
+-- 同一角色、同一归一化问题只保留一行。并发首次成功用 INSERT ... ON CONFLICT 并入这一行。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_query_cache_role_normalized_q
+    ON query_cache(role_scope, normalized_q);
