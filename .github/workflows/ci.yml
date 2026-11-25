@@ -6,7 +6,8 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # ubuntu-latest（当前 26.04）的 setup-python 没有 3.9。22.04 同时提供 3.9 和 3.11。
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
