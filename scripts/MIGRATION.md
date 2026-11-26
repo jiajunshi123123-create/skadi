@@ -74,3 +74,5 @@ VALUES ('dingtalk', '钉钉senderStaffId', 'u-001', '姓名');
 `query_cache` 以 `(role_scope, normalized_q)` 唯一。飞书、Web、钉钉会同时写这张表，所以成功次数用 `success_cnt = success_cnt + 1` 在同一条 `UPDATE` 里改状态，新行用 `INSERT ... ON CONFLICT` 并入，不再先查再插。
 
 已经有数据卷时，`migrate.sql` 会先删掉这个键上的重复行，再加唯一索引 `uq_query_cache_role_normalized_q`。每个键保留一行：`verified` 优先，其次 `success_cnt` 更高，其次 `id` 更小。这一步可以重复执行。如果当时还有写入，唯一索引会失败，停掉写入后重跑即可。全新安装走 `init_db.sql`，建表时就带这个唯一索引。
+
+同一份脚本还会创建 `report_schedules`。演示角色只在 `scripts/demo/seed_permissions.sql`，不要写进生产库。

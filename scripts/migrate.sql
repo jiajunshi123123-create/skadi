@@ -291,4 +291,21 @@ CREATE TABLE IF NOT EXISTS context_anchors (
 CREATE INDEX IF NOT EXISTS idx_context_anchors_session
     ON context_anchors(session_id, compressed_at DESC);
 
+CREATE TABLE IF NOT EXISTS report_schedules (
+    id              SERIAL PRIMARY KEY,
+    owner_user_id   VARCHAR(128) NOT NULL,
+    channel         VARCHAR(32) NOT NULL,
+    target          VARCHAR(256) NOT NULL,
+    cron            VARCHAR(64) NOT NULL,
+    report_spec     TEXT NOT NULL,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at     TIMESTAMP,
+    last_error      TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_schedules_owner
+    ON report_schedules(owner_user_id, enabled);
+
 COMMIT;

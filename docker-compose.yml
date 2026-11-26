@@ -10,6 +10,7 @@ services:
       # .env 里的 WEB_BIND_HOST 往往是 127.0.0.1，那只适合本机进程。
       # 容器里必须监听 0.0.0.0，上面的端口映射才有效。
       WEB_BIND_HOST: 0.0.0.0
+      REPORT_SCHEDULER: "off"
     ports:
       # 只绑定宿主机回环地址。需要对局域网开放时再改成 "8080:8080"。
       - "127.0.0.1:8080:8080"
@@ -22,6 +23,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config
+      - report_data:/app/data/reports
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
       interval: 30s
@@ -34,6 +36,8 @@ services:
     build: .
     container_name: ai-data-feishu
     env_file: .env
+    environment:
+      REPORT_SCHEDULER: "off"
     command: python -m channels.feishu
     healthcheck:
       test: ["CMD", "python", "-c", "import os,sys,time; p=os.environ.get('HEARTBEAT_PATH','/tmp/skadi-heartbeat'); age=time.time()-os.stat(p).st_mtime; sys.exit(0 if age<90 else 1)"]
@@ -56,6 +60,8 @@ services:
     build: .
     container_name: ai-data-agent
     env_file: .env
+    environment:
+      REPORT_SCHEDULER: "off"
     command: python dingtalk_bot.py
     healthcheck:
       test: ["CMD", "python", "-c", "import os,sys,time; p=os.environ.get('HEARTBEAT_PATH','/tmp/skadi-heartbeat'); age=time.time()-os.stat(p).st_mtime; sys.exit(0 if age<90 else 1)"]
@@ -94,6 +100,20 @@ services:
       retries: 5
     restart: unless-stopped
 
+  scheduler:
+    build: .
+    container_name: ai-data-scheduler
+    env_file: .env
+    command: python -m reports.scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - report_data:/app/data/reports
+
   chromadb:
     image: chromadb/chroma:latest
     container_name: agent-chromadb
@@ -105,3 +125,4 @@ services:
 volumes:
   pg_data:
   chroma_data:
+  report_data:

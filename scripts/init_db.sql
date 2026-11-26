@@ -203,3 +203,24 @@ CREATE INDEX IF NOT EXISTS idx_query_cache_role_status
 -- 同一角色、同一归一化问题只保留一行。并发首次成功用 INSERT ... ON CONFLICT 并入这一行。
 CREATE UNIQUE INDEX IF NOT EXISTS uq_query_cache_role_normalized_q
     ON query_cache(role_scope, normalized_q);
+
+-- ---------------------------------------------------------------------------
+-- 定时报告。只发给 owner 自己的私聊，执行前重新检查角色是否仍然有效。
+-- cron 是五段式，时区 Asia/Shanghai。target 是创建时那条私聊的外部 ID。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS report_schedules (
+    id              SERIAL PRIMARY KEY,
+    owner_user_id   VARCHAR(128) NOT NULL,
+    channel         VARCHAR(32) NOT NULL,
+    target          VARCHAR(256) NOT NULL,
+    cron            VARCHAR(64) NOT NULL,
+    report_spec     TEXT NOT NULL,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at     TIMESTAMP,
+    last_error      TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_schedules_owner
+    ON report_schedules(owner_user_id, enabled);

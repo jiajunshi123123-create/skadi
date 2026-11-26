@@ -111,6 +111,28 @@ curl -N -H "X-API-Key: $WEB_API_KEY" -H 'Content-Type: application/json' \
 Web、钉钉、飞书三个入口在启动时检查各自必需的变量。缺一项或仍是 `.env.example` 里的占位符时，进程直接退出，并把缺的名字一次列出来，不会打印变量的值。Web 还要求 `WEB_API_KEY_ROLES`。
 
 `GET /health` 和 `GET /healthz` 不需要密钥，响应里只有状态和已加载技能数量。钉钉和飞书不监听端口，容器健康检查读 `/tmp/skadi-heartbeat`。
+
+## 分析报告
+
+普通问题仍是一次查询。周报、月报、分析报告、复盘，以及带「基线 / 异常 / 同比」的问题会拆成最多 4 条子查询。均值、环比、同星期几基线和异常点由 Python 对全部行计算，报告按「总结 / 数据来源 / 计算方法 / 详细分析 / 建议」写成。模型若写出计算结果里没有的数字，会重写一次，仍然对不上就在文末标出。
+
+报告会生成时间序列图、拆分图、Markdown 和 docx。Web 在回复里给出 `/api/reports/{id}?name=report.docx`，只能用生成它的那个密钥下载，默认 7 天后删除。飞书会再发一张图和 docx 文件，需要权限 `im:resource`（上传图片和文件）。钉钉在 SDK 提供 markdown 或图片回复时发送，否则保留文字报告。
+
+定时报告示例：
+
+- `每周一早上9点发我上周日活周报`
+- `我的定时报告`
+- `取消定时报告 1`
+
+时间按 Asia/Shanghai 解释，只发到创建时的那条私聊。执行前重新读取主人的角色；角色停用或被删除后，这条定时报告会关掉。`docker compose up` 用独立的 `scheduler` 服务跑，机器人容器里的进程内调度是关的。只跑 `python -m channels.feishu` 时，调度跟在机器人进程里。表结构在 `scripts/init_db.sql`，旧库执行 `scripts/migrate.sql`。
+
+## 演示模式
+
+演示不读取生产 `.env`，也不使用生产数据字典。`make demo` 只启动 `docker-compose.demo.yml`：本地 MySQL（`skadi_demo`）、一份只含 `demo_daily_metrics` 权限的角色，以及 Web。加载脚本在 `DEMO_MODE` 不是 `1` 或库名不是 `skadi_demo` 时直接退出。
+
+样例报告（尖峰日、渠道合作下跌、缺数日）在 `docs/demo/`。图表使用仓库里的 `assets/fonts/NotoSansCJKsc-Regular.otf`。
+
+飞书上传图片和文件还需要在开放平台开通 `im:resource`，并发布版本。已有的发消息权限不够。
 | `DB_USER` | 请使用只有 `SELECT` 权限的账号 |
 
 分析库账号不要用 `root`。Postgres 与 Chroma 在 `docker-compose.yml` 里不再映射到宿主机端口；Web 端口默认只绑定 `127.0.0.1:8080`。容器内进程仍监听 `0.0.0.0`，否则 Docker 端口映射无法转发。

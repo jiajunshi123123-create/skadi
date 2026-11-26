@@ -1,0 +1,45 @@
+# 只给演示库 skadi_demo 使用。生产环境不要把 DATA_DICTIONARY_PATH 指到这个文件。
+database:
+  type: mysql
+  name: skadi_demo
+
+tables:
+  - name: demo_daily_metrics
+    description: "演示用的日经营指标。含渠道、区域、品类、新老客，以及埋好的尖峰、渠道下跌和缺数日。"
+    partition_key: stat_date
+    partition_type: DATE
+    has_today_data: false
+    fields:
+      - name: stat_date
+        type: DATE
+        description: "统计日"
+      - name: channel
+        type: VARCHAR
+        description: "渠道：App、网页、小程序、渠道合作"
+      - name: region
+        type: VARCHAR
+        description: "区域：华东、华北、华南、西部"
+      - name: category
+        type: VARCHAR
+        description: "品类：服饰、数码、食品、家居"
+      - name: user_type
+        type: VARCHAR
+        description: "新客或老客"
+      - name: dau
+        type: BIGINT
+        description: "日活"
+      - name: orders
+        type: BIGINT
+        description: "订单数"
+      - name: gmv
+        type: DECIMAL
+        description: "成交额"
+    typical_queries:
+      - description: "按日汇总日活"
+        sql: |
+          SELECT stat_date, SUM(dau) AS dau
+          FROM demo_daily_metrics
+          GROUP BY stat_date
+          ORDER BY stat_date
+    baseline:
+      description: "工作日高于周末，整体缓慢增长。不要把这里的句子当成查询结果。"

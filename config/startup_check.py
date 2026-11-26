@@ -47,6 +47,7 @@ _ENTRYPOINTS = {
     "web": _COMMON + ("WEB_API_KEY", "WEB_API_KEY_ROLES"),
     "dingtalk": _COMMON + ("DINGTALK_BOT_APP_KEY", "DINGTALK_BOT_APP_SECRET"),
     "feishu": _COMMON + ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
+    "scheduler": _COMMON,
 }
 
 
