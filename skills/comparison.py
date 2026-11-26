@@ -42,4 +42,11 @@ class ComparisonSkill(AnalysisSkill):
 - 明确指出谁领先、谁落后，差距多大
 - 说明差距是扩大还是缩小
 - 给出资源分配的优先级建议
+
+环比、同比和贡献占比以 analyze_data 的 mom / yoy / breakdowns 为准。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import comparison_facts
+
+        return comparison_facts(data, cols)

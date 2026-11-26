@@ -37,4 +37,11 @@ class TrendSkill(AnalysisSkill):
 ### 5. 趋势预测（定性）
 - 基于当前趋势方向，推断短期（未来1-3期）的可能走向
 - 标注预测的不确定性因素
+
+引用数字时只使用已经算好的 trend / moving_averages / mom，不要心算。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import trend_facts
+
+        return trend_facts(data, cols)

@@ -11,6 +11,8 @@ from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from analysis.number_check import untraceable_numbers, warning_block
+from analysis.present import format_facts_block, format_result_for_llm
 from config.agent_config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
     ANALYSIS_MODEL, ANALYSIS_TEMPERATURE, ANALYSIS_MAX_TOKENS,
@@ -96,7 +98,8 @@ class AnalysisAgent:
         query_result: dict,
         anomaly_summary: str = "",
         inspection_context: str = "",
-        skills_context: str = ""
+        skills_context: str = "",
+        computed_facts: dict = None,
     ) -> str:
         """
         分析查询结果，生成三段式回复。
@@ -107,15 +110,18 @@ class AnalysisAgent:
             anomaly_summary: 异常检测摘要（M1阶段）
             inspection_context: 数据核查探查报告（Inspection Agent）
             skills_context: 匹配的分析技能方法论指令
+            computed_facts: Python 对全部行算出的事实。为空时从 query_result 读取
 
         Returns:
             格式化的分析文本（三段式：📊数据 → 📈分析 → 💡建议）
         """
+        facts = computed_facts if computed_facts is not None else (query_result or {}).get("computed_facts") or {}
         context = self._build_context(
             user_query, query_result,
             anomaly_summary=anomaly_summary,
             inspection_context=inspection_context,
-            skills_context=skills_context
+            skills_context=skills_context,
+            computed_facts=facts,
         )
 
         # 构建消息：系统提示 + 技能指令 + 核查报告 + 数据上下文
@@ -135,13 +141,34 @@ class AnalysisAgent:
         )
 
         try:
-            response = await self.llm.ainvoke(messages)
-            analysis = response.content.strip()
+            analysis = await self._invoke(messages)
+            sample_text = format_result_for_llm(query_result or {}, facts)
+            flagged = untraceable_numbers(analysis, facts, sample_text)
+            if flagged:
+                logger.warning("[AnalysisAgent] 输出含无法追溯的数字: %s", flagged[:8])
+                retry = list(messages)
+                retry.append(HumanMessage(content=(
+                    "你刚才写出了计算结果和样本里都没有的数字："
+                    + "、".join(flagged[:12])
+                    + "。请重写。只能使用「计算结果」和「代表性样本」中的数字；"
+                    "数据不足就明确写数据不足。"
+                )))
+                try:
+                    rewritten = await self._invoke(retry)
+                except Exception:
+                    logger.exception("[AnalysisAgent] 数字核对后的重写失败")
+                    rewritten = analysis
+                flagged_again = untraceable_numbers(rewritten, facts, sample_text)
+                analysis = rewritten if not flagged_again else rewritten + warning_block(flagged_again)
             logger.info(f"[AnalysisAgent] 分析完成，输出长度: {len(analysis)}")
             return analysis
         except Exception as e:
             logger.error(f"[AnalysisAgent] 分析失败: {e}")
             return self._fallback_analysis(query_result)
+
+    async def _invoke(self, messages) -> str:
+        response = await self.llm.ainvoke(messages)
+        return (response.content or "").strip()
 
     def _build_context(
         self,
@@ -149,10 +176,12 @@ class AnalysisAgent:
         result: dict,
         anomaly_summary: str = "",
         inspection_context: str = "",
-        skills_context: str = ""
+        skills_context: str = "",
+        computed_facts: dict = None,
     ) -> str:
         """构建分析上下文，传递给LLM"""
-        data_display = self._format_data(result)
+        facts = computed_facts if computed_facts is not None else (result or {}).get("computed_facts") or {}
+        data_display = format_result_for_llm(result or {}, facts)
 
         context = f"""用户问题：{query}
 
@@ -162,8 +191,11 @@ class AnalysisAgent:
 数据行数: {result.get('row_count', 0)}
 重试次数: {result.get('retries', 0)}
 
-数据内容:
+代表性样本（不是全部行）:
 {data_display}
+
+计算结果（Python 对全部行计算，引用数字只能来自这里或上面的样本）:
+{format_facts_block(facts)}
 """
 
         # 注入异常检测摘要
@@ -175,7 +207,7 @@ class AnalysisAgent:
             context += f"\n{inspection_context}\n"
 
         context += "\n请按照分析三步法（📊数据概览 → 📈趋势分析 → 💡行动建议）进行深度分析。"
-        context += "\n注意：基于实际数据分析，不要编造任何数字。"
+        context += "\n注意：不要心算新的均值、环比或 z 分数。样本被省略的行已经包含在计算结果里。"
 
         return context
 

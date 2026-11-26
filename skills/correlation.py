@@ -47,4 +47,11 @@ class CorrelationSkill(AnalysisSkill):
 - 用业务语言解读关联含义
 - 提出可验证的因果假设
 - 建议下一步的验证方法（如A/B测试）
+
+相关系数只引用 analyze_data 返回的 r，不要估算。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import correlation_facts
+
+        return correlation_facts(data, cols)

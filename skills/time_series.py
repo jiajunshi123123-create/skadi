@@ -45,4 +45,11 @@ class TimeSeriesSkill(AnalysisSkill):
 - 给出明确的预测数值和方向
 - 标注预测的风险因素和不确定性
 - 建议：何时需要修正预测（触发条件）
+
+移动平均、星期基线和斜率以 analyze_data 的结果为准。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import time_series_facts
+
+        return time_series_facts(data, cols)

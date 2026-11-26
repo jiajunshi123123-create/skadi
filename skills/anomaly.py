@@ -40,7 +40,14 @@ class AnomalySkill(AnalysisSkill):
 3. 自然波动：节假日、季节性、周期性
 
 ### 5. 异常严重程度评级
-- 🟢 轻度：在正常波动范围内，无需特别关注
-- 🟡 中度：偏离基线20%-50%，建议关注
-- 🔴 严重：偏离基线>50%，建议立即排查
+- 🟢 轻度：|z| 在 2 到 3 之间
+- 🔴 严重：|z| ≥ 3，或 IQR 离群
+
+只引用 analyze_data 给出的 anomalies 和 missing_days。不要自己重算 z 值。
+数据不足（同星期几样本少于 8）时写明无法建立基线。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import anomaly_facts
+
+        return anomaly_facts(data, cols)
