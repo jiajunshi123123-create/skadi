@@ -598,3 +598,37 @@ body {
     animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ========== API key modal ========== */
+.auth-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 18, 0.72);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.auth-card {
+    width: min(420px, 100%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow);
+}
+.auth-card h2 { font-size: 16px; margin-bottom: 8px; }
+.auth-card p { color: var(--text-secondary); font-size: 12px; line-height: 1.5; margin-bottom: 14px; }
+.auth-label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
+.auth-label input {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.auth-actions { display: flex; gap: 8px; justify-content: flex-end; }

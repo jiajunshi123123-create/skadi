@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI数据分析助手 | 武老师快答</title>
-    <link rel="stylesheet" href="/css/style.css?v=1781767557">
+    <link rel="stylesheet" href="/css/style.css?v=20261124">
 </head>
 <body>
 
@@ -42,6 +42,7 @@
             </div>
             <div class="header-actions">
                 <span id="token-usage" class="token-indicator">--</span>
+                <button id="api-key-btn" class="btn-new-chat" type="button" title="设置 API Key">密钥</button>
                 <button id="new-chat-header-btn" class="btn-new-chat" title="新建对话">+ 新对话</button>
             </div>
         </header>
@@ -101,7 +102,24 @@
         </aside>
 
 
+    <div id="auth-modal" class="auth-modal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+        <form id="auth-form" class="auth-card">
+            <h2 id="auth-modal-title">访问凭证</h2>
+            <p id="auth-modal-message">服务已启用 API 认证。密钥只保存在当前浏览器标签页中，不会写入本地长期存储。</p>
+            <label class="auth-label">API Key
+                <input id="api-key-input" type="password" autocomplete="off" spellcheck="false" required>
+            </label>
+            <label class="auth-label">Admin Key（仅扫描数据库）
+                <input id="admin-key-input" type="password" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="auth-actions">
+                <button type="submit" class="btn-new-chat">保存</button>
+                <button type="button" id="auth-cancel-btn" class="btn-new-chat">关闭</button>
+            </div>
+        </form>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="/js/app.js?v=1781767557"></script>
+    <script src="/js/app.js?v=20261124"></script>
 </body>
 </html>

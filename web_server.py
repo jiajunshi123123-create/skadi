@@ -27,6 +27,13 @@ from agent_orchestrator import run_agent
 from skills import skill_registry
 from utils.context_compactor import compact_conversation, load_anchors_from_pg
 from utils.token_estimator import estimate_tokens_fast
+from utils.web_auth import (
+    admin_key_configured,
+    api_key_configured,
+    authorize,
+    check_rate_limit,
+    scoped_session_id,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +52,31 @@ app = FastAPI(
 # ============================================================
 
 _session_contexts: dict = {}  # session_id → {last_context, history, created_at}
+
+
+def _client_host(request: Request) -> str:
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _guard(request: Request, *, admin: bool = False):
+    """认证并限流。返回 (caller_id, error_response)。"""
+    decision = authorize(request.headers, _client_host(request), admin=admin)
+    if not decision.ok:
+        return None, JSONResponse(
+            {"error": decision.error},
+            status_code=decision.status_code,
+            headers={"Retry-After": "60"} if decision.status_code == 429 else None,
+        )
+    limited = check_rate_limit(decision.caller_id, "admin" if admin else "user")
+    if limited is not None:
+        return None, JSONResponse(
+            {"error": limited.error},
+            status_code=limited.status_code,
+            headers={"Retry-After": "60"},
+        )
+    return decision.caller_id, None
 
 
 def _get_or_create_session(session_id: str) -> dict:
@@ -85,6 +117,14 @@ async def _cleanup_sessions():
 async def startup():
     asyncio.create_task(_cleanup_sessions())
     logger.info(f"[Web] 服务启动，已加载 {len(skill_registry.get_all())} 个分析技能")
+    if api_key_configured():
+        logger.info("[Web] API 认证已启用（WEB_API_KEY）")
+    else:
+        logger.error("[Web] WEB_API_KEY 未配置或强度不足，/api 业务接口将拒绝访问")
+    if admin_key_configured():
+        logger.info("[Web] 管理接口认证已启用（WEB_ADMIN_API_KEY）")
+    else:
+        logger.warning("[Web] WEB_ADMIN_API_KEY 未配置或与 WEB_API_KEY 相同，/api/scan 已禁用")
 
 
 # ============================================================
@@ -97,6 +137,7 @@ async def chat(request: Request):
     """
     聊天接口 - SSE 流式响应
 
+    请求头: X-API-Key 或 Authorization: Bearer <WEB_API_KEY>
     请求体:
     {
         "query": "昨天日活多少",
@@ -109,14 +150,32 @@ async def chat(request: Request):
     - event: metadata → {"plan_task": ..., "query_result": ..., "inspection_result": ..., "activated_skills": [...]}
     - event: done     → {"duration": 1.5}
     """
+    caller_id, rejected = _guard(request, admin=False)
+    if rejected:
+        return rejected
+
     try:
         body = await request.json()
-        query = body.get('query', '').strip()
-        session_id = body.get('session_id', 'default')
+        query = body.get('query', '').strip() if isinstance(body.get('query', ''), str) else ''
+        client_session_id = body.get('session_id', 'default')
+        if client_session_id is None:
+            client_session_id = 'default'
+        elif not isinstance(client_session_id, str):
+            return JSONResponse(
+                {'error': 'session_id 无效，只允许字母、数字、._-，最长 40 字符'},
+                status_code=400,
+            )
 
         if not query:
             return JSONResponse(
                 {'error': 'query 不能为空'}, status_code=400
+            )
+        try:
+            session_id = scoped_session_id(caller_id, client_session_id)
+        except ValueError:
+            return JSONResponse(
+                {'error': 'session_id 无效，只允许字母、数字、._-，最长 40 字符'},
+                status_code=400,
             )
 
         session = _get_or_create_session(session_id)
@@ -217,8 +276,11 @@ async def chat(request: Request):
 
 
 @app.get("/api/skills")
-async def list_skills():
+async def list_skills(request: Request):
     """列出所有分析技能"""
+    _, rejected = _guard(request, admin=False)
+    if rejected:
+        return rejected
     return JSONResponse({
         'total': len(skill_registry.get_all()),
         'skills': skill_registry.list_skills_info(),
@@ -230,8 +292,11 @@ async def list_skills():
 
 
 @app.get("/api/skills/{name:path}")
-async def get_skill(name: str):
+async def get_skill(name: str, request: Request):
     """获取指定技能的详细信息"""
+    _, rejected = _guard(request, admin=False)
+    if rejected:
+        return rejected
     skill = skill_registry.get_by_name(name)
     if not skill:
         return JSONResponse({'error': f'技能 "{name}" 不存在'}, status_code=404)
@@ -247,8 +312,11 @@ async def get_skill(name: str):
 
 
 @app.post("/api/scan")
-async def scan_database():
-    """扫描数据库，生成 data_dictionary.yml"""
+async def scan_database(request: Request):
+    """扫描数据库，生成 data_dictionary.yml。仅 WEB_ADMIN_API_KEY 可调用。"""
+    _, rejected = _guard(request, admin=True)
+    if rejected:
+        return rejected
     import json, asyncio
     from tools.db_scanner import scan_database as do_scan
 
@@ -301,8 +369,11 @@ async def scan_database():
 
 # Check if data dictionary exists on startup
 @app.get("/api/dictionary-status")
-async def dictionary_status():
+async def dictionary_status(request: Request):
     """检查 data_dictionary.yml 是否存在"""
+    _, rejected = _guard(request, admin=False)
+    if rejected:
+        return rejected
     import os
     config_dir = os.path.join(os.path.dirname(__file__), 'config')
     yml_path = os.path.join(config_dir, 'data_dictionary.yml')
@@ -362,10 +433,13 @@ else:
 
 if __name__ == '__main__':
     import uvicorn
+    # 直接运行时默认只监听本机。容器内需要被端口映射访问时再设 WEB_BIND_HOST=0.0.0.0。
+    bind_host = os.getenv("WEB_BIND_HOST", "127.0.0.1")
+    bind_port = int(os.getenv("WEB_PORT", "8080"))
     uvicorn.run(
         "web_server:app",
-        host="0.0.0.0",
-        port=8080,
+        host=bind_host,
+        port=bind_port,
         reload=False,
         log_level="info",
     )

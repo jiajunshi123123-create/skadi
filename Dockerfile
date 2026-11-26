@@ -25,6 +25,9 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python -c "import sys; sys.exit(0)"
 
 # 默认启动 Web 服务（钉钉 Bot 需显式覆盖 CMD）
+# 容器内监听 0.0.0.0，否则 docker 端口映射到不了进程。
+# 宿主机暴露范围由 docker-compose 的 ports 决定（默认仅 127.0.0.1）。
+# 直接 `python web_server.py` 时默认只绑定 127.0.0.1，见 WEB_BIND_HOST。
 # 用法:
 #   Web 服务:   docker run ... (默认)
 #   钉钉 Bot:   docker run ... python dingtalk_bot.py

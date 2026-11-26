@@ -31,17 +31,26 @@ ANALYSIS_MAX_TOKENS = 3000
 DB_TYPE = os.getenv('DB_TYPE', 'mysql')
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = int(os.getenv('DB_PORT', '3306'))
-DB_USER = os.getenv('DB_USER', 'root')
+DB_USER = os.getenv('DB_USER', '')
 DB_PASSWORD = os.getenv('DB_PASSWORD', '')
 DB_NAME = os.getenv('DB_NAME', '')
 
 # ============ [兼容] StarRocks 旧配置（已迁移至统一适配层） ============
-# 保留用于兼容旧脚本，新代码请使用 DB_* 系列变量
-STARROCKS_HOST = os.getenv('DB_HOST', 'fe-c-76ef85649c2dc193.starrocks.aliyuncs.com')
-STARROCKS_PORT = int(os.getenv('DB_PORT', '9030'))
-STARROCKS_USER = os.getenv('DB_USER', 'WanWei_GJshijiajun')
-STARROCKS_PASSWORD = os.getenv('DB_PASSWORD', os.getenv('STARROCKS_PASSWORD', ''))
-STARROCKS_DB = os.getenv('DB_NAME', 'app_prod_db')
+# 保留用于兼容旧脚本，新代码请使用 DB_* 系列变量。
+# 不提供生产环境默认值；未设置时使用本机 / 空字符串，由调用方显式配置。
+def _first_env(*names: str, default: str = '') -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
+STARROCKS_HOST = _first_env('STARROCKS_HOST', 'DB_HOST', default='localhost')
+STARROCKS_PORT = int(_first_env('STARROCKS_PORT', 'DB_PORT', default='9030'))
+STARROCKS_USER = _first_env('STARROCKS_USER', 'DB_USER', default='')
+STARROCKS_PASSWORD = _first_env('STARROCKS_PASSWORD', 'DB_PASSWORD', default='')
+STARROCKS_DB = _first_env('STARROCKS_DB', 'DB_NAME', default='')
 
 # ============ PostgreSQL（经验知识库） ============
 PG_HOST = os.getenv('PG_HOST', os.getenv('PGHOST', 'localhost'))

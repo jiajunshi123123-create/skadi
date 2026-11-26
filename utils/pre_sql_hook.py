@@ -6,20 +6,31 @@
 - 退出码 2: 阻止，拒绝执行
 
 校验级别：
-1. 安全校验: 禁止非SELECT语句
-2. 模式校验: 危险SQL模式检测 (DROP/DELETE/ALTER)
+1. 安全校验: 只允许单条 SELECT / WITH（CTE）/ EXPLAIN
+2. 模式校验: 危险SQL模式检测 (DROP/DELETE/ALTER/INTO OUTFILE)
 3. 规模校验: 预估扫描行数告警 (基于EXPLAIN)
 4. 白名单校验: 仅允许查询已注册的表
 5. 复杂度假校验: 检测笛卡尔积/过度JOIN
 """
 
+import os
 import re
 import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
 
+from utils.sql_safety import check_readonly_sql, extract_cte_names, normalize_for_analysis
+
 logger = logging.getLogger(__name__)
+
+
+def strict_mode_from_env(default: bool = True) -> bool:
+    """SQL_HOOK_STRICT_MODE 缺省为 true：警告也会阻止执行。"""
+    raw = os.getenv("SQL_HOOK_STRICT_MODE")
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class HookExitCode(IntEnum):
@@ -113,13 +124,16 @@ class PreSQLHook:
             return error_response(result.message)
     """
 
-    def __init__(self, strict_mode: bool = False):
+    def __init__(self, strict_mode: Optional[bool] = None):
         """初始化钩子。
 
         Args:
-            strict_mode: 严格模式，警告也会阻止执行
+            strict_mode: 严格模式，警告也会阻止执行。
+                None 时读取 SQL_HOOK_STRICT_MODE，缺省为 True。
         """
-        self.strict_mode = strict_mode
+        if strict_mode is None:
+            strict_mode = strict_mode_from_env()
+        self.strict_mode = bool(strict_mode)
         self._validation_count = 0
 
     def validate(
@@ -146,20 +160,24 @@ class PreSQLHook:
         checks_failed = 0
         exit_code = HookExitCode.PASS
 
-        sql_upper = sql.upper().strip()
-
-        # ---- 校验1: 基本SQL类型检查 ----
-        if not sql_upper.startswith('SELECT') and not sql_upper.startswith('EXPLAIN'):
+        # ---- 校验1: 单条只读语句（SELECT / WITH / EXPLAIN，禁止导出文件） ----
+        safety_error = check_readonly_sql(sql)
+        if safety_error:
             return HookResult(
                 exit_code=HookExitCode.BLOCK,
-                message=f'🚫 仅允许SELECT查询，当前SQL: {sql[:50]}...',
+                message=safety_error,
                 is_safe=False,
             )
         checks_passed += 1
 
+        try:
+            scanned_sql = normalize_for_analysis(sql)
+        except ValueError:
+            scanned_sql = sql
+
         # ---- 校验2: 危险操作检测 ----
         for pattern, description in FORBIDDEN_PATTERNS:
-            if re.search(pattern, sql, re.IGNORECASE):
+            if re.search(pattern, scanned_sql, re.IGNORECASE):
                 checks_failed += 1
                 return HookResult(
                     exit_code=HookExitCode.BLOCK,
@@ -173,7 +191,7 @@ class PreSQLHook:
 
         # ---- 校验3: 警告模式检测 ----
         for pattern, description in WARNING_PATTERNS:
-            if re.search(pattern, sql, re.IGNORECASE):
+            if re.search(pattern, scanned_sql, re.IGNORECASE):
                 warnings.append(description)
                 logger.warning(f"[PreSQLHook] 警告: {description} | SQL: {sql[:80]}...")
 
@@ -270,23 +288,35 @@ class PreSQLHook:
         Returns:
             True 如果安全
         """
-        sql_upper = sql.upper().strip()
-        if not sql_upper.startswith('SELECT') and not sql_upper.startswith('EXPLAIN'):
+        if check_readonly_sql(sql) is not None:
+            return False
+
+        try:
+            scanned_sql = normalize_for_analysis(sql)
+        except ValueError:
             return False
 
         for pattern, _ in FORBIDDEN_PATTERNS:
-            if re.search(pattern, sql, re.IGNORECASE):
+            if re.search(pattern, scanned_sql, re.IGNORECASE):
                 return False
 
         return True
 
+    def _cte_names(self, sql: str) -> set:
+        """CTE 名称。这些名字不是物理表，不能当成未登记表。"""
+        return extract_cte_names(sql)
+
     def _extract_tables(self, sql: str) -> set:
-        """从SQL中提取表名集合。"""
-        sql_clean = ' '.join(re.sub(r'--[^\n]*', '', sql).split())
-        sql_clean = re.sub(r'/\*.*?\*/', '', sql_clean, flags=re.DOTALL)
-        pattern = r'\b(?:FROM|JOIN)\s+([`"]?[\w]+[`"]?(?:\.[`"]?[\w]+[`"]?)?)'
+        """从SQL中提取表名集合（忽略注释、字符串和 CTE 名称）。"""
+        try:
+            sql_clean = normalize_for_analysis(sql)
+        except ValueError:
+            return set()
+        cte_names = self._cte_names(sql)
+        pattern = r'\b(?:FROM|JOIN)\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)'
         matches = re.findall(pattern, sql_clean, re.IGNORECASE)
-        return {m.replace('`', '').replace('"', '').split('.')[-1] for m in matches}
+        tables = {match.split('.')[-1] for match in matches}
+        return {table for table in tables if table.lower() not in cte_names}
 
     def get_stats(self) -> dict:
         """获取Hook统计。"""
@@ -296,5 +326,5 @@ class PreSQLHook:
         }
 
 
-# 全局实例（非严格模式，允许警告通过）
-pre_sql_hook = PreSQLHook(strict_mode=False)
+# 全局实例。严格模式默认开启，可用 SQL_HOOK_STRICT_MODE=false 关闭。
+pre_sql_hook = PreSQLHook()

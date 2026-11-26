@@ -1,6 +1,14 @@
 #!/opt/venv/bin/python3
 """StarRocks安全查询 v2 — EXPLAIN校验 + 执行"""
 import os, sys, pymysql
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools.database_adapter import apply_mysql_readonly_session
+from utils.sql_safety import check_readonly_sql
 
 DB = sys.argv[1] if len(sys.argv) > 1 else "your_database"
 SQL = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
@@ -19,16 +27,17 @@ CONN = {"host":os.environ.get("STARROCKS_HOST","your-starrocks-host"),"port":903
 def run(sql):
     conn = pymysql.connect(**CONN); cur = conn.cursor()
     try:
+        apply_mysql_readonly_session(cur)
         cur.execute(sql)
         cols = [d[0] for d in cur.description] if cur.description else []
         rows = [list(r) for r in cur.fetchall()]
         return cols, rows
     finally: cur.close(); conn.close()
 
-# 1. Security
-for kw in ["INSERT","UPDATE","DELETE","DROP","ALTER","CREATE","TRUNCATE","GRANT","REVOKE"]:
-    if kw in SQL.upper().split():
-        print(f"REJECTED: {kw}"); sys.exit(1)
+# 1. Security — single SELECT / WITH / EXPLAIN, no INTO OUTFILE
+_safety_error = check_readonly_sql(SQL)
+if _safety_error:
+    print(f"REJECTED: {_safety_error}"); sys.exit(1)
 
 # 2. EXPLAIN
 FIELD_ERRORS = ["Unknown column","doesn't exist","cannot be resolved","Unknown table"]

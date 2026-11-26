@@ -24,7 +24,7 @@ def execute_starrocks_query(sql: str, database: str = None) -> dict:
 
     通过调用 starrocks_query_safe.py 脚本执行，该脚本内置：
     - EXPLAIN 预校验（防止危险SQL）
-    - 只读约束（只允许SELECT）
+    - 只读约束（只允许单条 SELECT / WITH / EXPLAIN，禁止 INTO OUTFILE）
     - 超时保护
 
     Args:

@@ -35,10 +35,36 @@
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env  # 填入 API Key 和数据库连接
+cp .env.example .env  # 填入 API Key、WEB_API_KEY 和只读数据库账号
 psql -f scripts/init_db.sql
-python -m uvicorn web_server:app --host 0.0.0.0 --port 8080
+python web_server.py  # 默认只监听 127.0.0.1:8080
 ```
+
+浏览器打开 `http://127.0.0.1:8080` 后，在「密钥」里填入 `WEB_API_KEY`。调用示例：
+
+```bash
+curl -N -H "X-API-Key: $WEB_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"query":"昨天日活多少","session_id":"s1"}' \
+  http://127.0.0.1:8080/api/chat
+```
+
+`POST /api/scan` 需要另一个请求头 `X-Admin-Key: $WEB_ADMIN_API_KEY`。
+
+## 安全相关环境变量
+
+| 变量 | 作用 |
+|------|------|
+| `WEB_API_KEY` | 访问 `/api/chat`、`/api/skills` 等接口。至少 16 位，且不能是示例占位符。可用逗号分隔多个密钥，每个密钥的会话互不可见 |
+| `WEB_ADMIN_API_KEY` | 仅 `/api/scan`。必须与 `WEB_API_KEY` 不同；不配置则扫描接口关闭 |
+| `WEB_RATE_LIMIT_PER_MINUTE` | 每个调用方的用户接口限流，默认 30 |
+| `WEB_ADMIN_RATE_LIMIT_PER_MINUTE` | 扫描接口限流，默认 5 |
+| `WEB_AUTH_FAILURE_LIMIT_PER_MINUTE` | 同一 IP 认证失败次数，默认 10 |
+| `WEB_BIND_HOST` | `python web_server.py` 的监听地址，默认 `127.0.0.1` |
+| `SQL_HOOK_STRICT_MODE` | 默认 `true`。为 true 时 `SELECT *`、未登记表、笛卡尔积等警告也会阻止执行 |
+| `PG_PASSWORD` | Compose 启动 Postgres 所必需，至少 12 位，拒绝 `changeme` 等占位符 |
+| `DB_USER` | 请使用只有 `SELECT` 权限的账号 |
+
+分析库账号不要用 `root`。Postgres 与 Chroma 在 `docker-compose.yml` 里不再映射到宿主机端口；Web 端口默认只绑定 `127.0.0.1:8080`。容器内进程仍监听 `0.0.0.0`，否则 Docker 端口映射无法转发。
 
 ## 技术栈
 
