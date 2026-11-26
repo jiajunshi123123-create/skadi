@@ -85,6 +85,7 @@ def compute_all(cols: list, rows: list) -> dict:
         "weekday_weekend": _weekday_weekend(daily, metric_cols),
         "sample_rows": _sample_rows(frame, date_col, metric_cols, anomalies),
         "sample_note": _sample_note(len(frame)),
+        "series": _primary_series(daily, metric_cols),
     }
     return facts
 
@@ -630,6 +631,18 @@ def _correlations(frame: pd.DataFrame, metrics: list) -> list:
             pairs.append({"left": left, "right": right, "r": _num(float(value)), "n": int(len(numeric))})
     pairs.sort(key=lambda item: abs(item["r"]), reverse=True)
     return pairs[:12]
+
+
+def _primary_series(daily: Optional[pd.DataFrame], metrics: list) -> dict:
+    """主指标的按日序列，最多 200 点，给报告作图用。"""
+    if daily is None or daily.empty or not metrics:
+        return {"metric": None, "points": []}
+    metric = metrics[0]
+    ordered = daily[metric].dropna().sort_index()
+    if len(ordered) > 200:
+        ordered = ordered.iloc[-200:]
+    points = [{"date": _date_text(day), "value": _num(value)} for day, value in ordered.items()]
+    return {"metric": metric, "points": points}
 
 
 def _sample_rows(frame: pd.DataFrame, date_col: Optional[str], metrics: list, anomalies: list) -> list:
