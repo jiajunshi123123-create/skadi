@@ -3,8 +3,9 @@
 *.pem
 *.key
 
-# Temp / test
+# Temp / test. The leading-underscore rule also matches __init__.py, so keep package markers.
 _*.py
+!__init__.py
 check_meta.py
 *.pyc
 __pycache__/

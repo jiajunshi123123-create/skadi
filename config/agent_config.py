@@ -1,6 +1,9 @@
 """Enterprise数据AI Agent系统 - 集中配置管理"""
 import os
+
 from dotenv import load_dotenv
+
+from config.env_settings import read_setting
 
 # 加载环境变量（云端部署时从 /opt/openclaw-workspace/.env 读取）
 _env_path = os.environ.get('ENV_FILE', '/opt/openclaw-workspace/.env')
@@ -27,37 +30,29 @@ QUERY_MAX_TOKENS = 1000
 ANALYSIS_MAX_TOKENS = 3000
 
 # ============ 数据源配置（统一适配层） ============
-# 支持 mysql / postgresql / starrocks，通过环境变量切换
-DB_TYPE = os.getenv('DB_TYPE', 'mysql')
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = int(os.getenv('DB_PORT', '3306'))
-DB_USER = os.getenv('DB_USER', '')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
-DB_NAME = os.getenv('DB_NAME', '')
+# 正式名字是 DB_*。STARROCKS_* 只作为弃用回退，读到时会打警告。
+DB_TYPE = read_setting('DB_TYPE', default='mysql')
+DB_HOST = read_setting('DB_HOST', 'STARROCKS_HOST', default='localhost')
+DB_PORT = int(read_setting('DB_PORT', 'STARROCKS_PORT', default='3306'))
+DB_USER = read_setting('DB_USER', 'STARROCKS_USER', default='')
+DB_PASSWORD = read_setting('DB_PASSWORD', 'STARROCKS_PASSWORD', default='')
+DB_NAME = read_setting('DB_NAME', 'STARROCKS_DB', default='')
 
-# ============ [兼容] StarRocks 旧配置（已迁移至统一适配层） ============
-# 保留用于兼容旧脚本，新代码请使用 DB_* 系列变量。
-# 不提供生产环境默认值；未设置时使用本机 / 空字符串，由调用方显式配置。
-def _first_env(*names: str, default: str = '') -> str:
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    return default
-
-
-STARROCKS_HOST = _first_env('STARROCKS_HOST', 'DB_HOST', default='localhost')
-STARROCKS_PORT = int(_first_env('STARROCKS_PORT', 'DB_PORT', default='9030'))
-STARROCKS_USER = _first_env('STARROCKS_USER', 'DB_USER', default='')
-STARROCKS_PASSWORD = _first_env('STARROCKS_PASSWORD', 'DB_PASSWORD', default='')
-STARROCKS_DB = _first_env('STARROCKS_DB', 'DB_NAME', default='')
+# 旧代码仍从这些名字取值。数值已经按 DB_* 优先解析过，不再反向覆盖。
+STARROCKS_HOST = DB_HOST
+STARROCKS_PORT = DB_PORT
+STARROCKS_USER = DB_USER
+STARROCKS_PASSWORD = DB_PASSWORD
+STARROCKS_DB = DB_NAME
 
 # ============ PostgreSQL（经验知识库） ============
-PG_HOST = os.getenv('PG_HOST', os.getenv('PGHOST', 'localhost'))
-PG_PORT = int(os.getenv('PG_PORT', '5432'))
-PG_DB = os.getenv('PG_DB', os.getenv('PGDATABASE', 'agent_experience'))
-PG_USER = os.getenv('PG_USER', os.getenv('PGUSER', 'agent_user'))
-PG_PASSWORD = os.getenv('PG_PASSWORD', os.getenv('PGPASSWORD', ''))
+# 正式名字是 PG_DATABASE / PG_PASSWORD。PG_DB、PGDATABASE、PGPASSWORD、PGHOST 已弃用。
+PG_HOST = read_setting('PG_HOST', 'PGHOST', default='localhost')
+PG_PORT = int(read_setting('PG_PORT', 'PGPORT', default='5432'))
+PG_DATABASE = read_setting('PG_DATABASE', 'PG_DB', 'PGDATABASE', default='agent_experience')
+PG_DB = PG_DATABASE
+PG_USER = read_setting('PG_USER', 'PGUSER', default='agent_user')
+PG_PASSWORD = read_setting('PG_PASSWORD', 'PGPASSWORD', default='')
 
 # ============ 路径配置 ============
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prompts')

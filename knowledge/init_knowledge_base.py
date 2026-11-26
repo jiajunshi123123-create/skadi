@@ -39,7 +39,7 @@ def init_data_dictionary(rag: RAGTool):
             'id': 'dict_core_behavior',
             'content': (
                 '表名: dwd_biz_bhv_maidian_user_core_behavior_daily\n'
-                '用途: 核心行为活跃用户查询（做题、阅读、打卡等）\n'
+                '用途: 核心行为活跃用户查询（下单、浏览、签到等）\n'
                 '分区键: dt_utc (DATETIME类型，注意不是dt)\n'
                 '字段: dt_utc, user_id, event_cnt, user_cnt\n'
                 '基线: 约18862 (2026-05-17)\n'
@@ -52,12 +52,12 @@ def init_data_dictionary(rag: RAGTool):
             'id': 'dict_books_detail',
             'content': (
                 '表名: dwd_biz_mrg_bhv_books_user_detail\n'
-                '用途: 图书答疑活跃用户查询\n'
+                '用途: 产品使用活跃用户查询\n'
                 '分区键: dt (DATETIME类型)\n'
-                '字段: dt, uid(varchar，注意是uid不是user_id), books_id, name(varchar，书名，数据完整度99.9999%)\n'
+                '字段: dt, uid(varchar，注意是uid不是user_id), books_id, name(varchar，产品名，数据完整度99.9999%)\n'
                 '基线: 约9121 (2026-05-17)\n'
-                '注意: 用户ID字段名为uid (varchar类型)，与其他表不同；图书字段是books_id 不是book_id；本表无question_count字段；\n'
-                '事实表内嵌书名字段name，查询图书明细/TOP/排行时必须在SELECT子句中包含 name as book_name，并在GROUP BY中含 books_id 与 name；禁止只返回 books_id 不带书名'
+                '注意: 用户ID字段名为uid (varchar类型)，与其他表不同；产品字段是books_id 不是book_id；本表无question_count字段；\n'
+                '事实表内嵌产品名字段name，查询产品明细/TOP/排行时必须在SELECT子句中包含 name as product_name，并在GROUP BY中含 books_id 与 name；禁止只返回 books_id 不带产品名'
             ),
             'metadata': {'type': 'data_dictionary', 'table': 'books_detail'}
         },
@@ -65,10 +65,10 @@ def init_data_dictionary(rag: RAGTool):
             'id': 'dict_books_dim',
             'content': (
                 '表名: dwd_biz_ubb_prod_books_detail\n'
-                '用途: 图书产品维度表（1516条记录），含图书完整元数据\n'
-                '关键字段: id(图书ID), name(书名), subject_name(科目), grade_name(年级), version(版本), year(年份)\n'
-                '使用场景: 需要图书年级/科目/版本等完整元数据时，可 LEFT JOIN dwd_biz_ubb_prod_books_detail d ON books_id = d.id\n'
-                '注意: 仅需书名不需JOIN此表，事实表dwd_biz_mrg_bhv_books_user_detail已内嵌name字段；仅在查询需要科目/年级/版本等额外元数据时才引入此JOIN'
+                '用途: 产品维度表（1516条记录），含产品完整元数据\n'
+                '关键字段: id(产品ID), name(产品名), subject_name(类目), grade_name(分层), version(版本), year(年份)\n'
+                '使用场景: 需要产品分层/类目/版本等完整元数据时，可 LEFT JOIN dwd_biz_ubb_prod_books_detail d ON books_id = d.id\n'
+                '注意: 仅需产品名不需JOIN此表，事实表dwd_biz_mrg_bhv_books_user_detail已内嵌name字段；仅在查询需要类目/分层/版本等额外元数据时才引入此JOIN'
             ),
             'metadata': {'type': 'data_dictionary', 'table': 'books_dim'}
         },
@@ -147,33 +147,33 @@ def init_sql_templates(rag: RAGTool):
         {
             'id': 'tpl_books_active',
             'content': (
-                '查询模式: 查询图书答疑活跃用户\n'
-                "SQL模板（全量活跃数）: SELECT COUNT(DISTINCT uid) as books_active "
+                '查询模式: 查询产品使用活跃用户\n'
+                "SQL模板（全量活跃数）: SELECT COUNT(DISTINCT uid) as product_active "
                 "FROM dwd_biz_mrg_bhv_books_user_detail "
                 "WHERE dt >= '{date}' AND dt < '{next_date}'\n"
-                "SQL模板（含书名的活跃排行）: SELECT books_id, name as book_name, COUNT(DISTINCT uid) as active_users "
+                "SQL模板（含产品名的活跃排行）: SELECT books_id, name as product_name, COUNT(DISTINCT uid) as active_users "
                 "FROM dwd_biz_mrg_bhv_books_user_detail "
                 "WHERE dt >= '{start_date}' AND dt < '{end_date}' "
                 "GROUP BY books_id, name ORDER BY active_users DESC LIMIT 20\n"
-                '注意: 用户字段是 uid(varchar) 不是 user_id；分区键 dt 为 DATETIME；图书字段是 books_id 不是 book_id；本表无 question_count；\n'
-                '事实表内嵌 name (书名) 字段，查询图书明细/TOP/排行时 SELECT 必须包含 name，GROUP BY 同时包含 books_id 与 name，禁止只返回 books_id\n'
-                '适用问题: "图书答疑活跃"、"图书用户数"、"哪本书最热门"、"图书活跃排行"'
+                '注意: 用户字段是 uid(varchar) 不是 user_id；分区键 dt 为 DATETIME；产品字段是 books_id 不是 book_id；本表无 question_count；\n'
+                '事实表内嵌 name (产品名) 字段，查询产品明细/TOP/排行时 SELECT 必须包含 name，GROUP BY 同时包含 books_id 与 name，禁止只返回 books_id\n'
+                '适用问题: "产品使用活跃"、"产品用户数"、"哪个产品最热门"、"产品活跃排行"'
             ),
             'metadata': {'type': 'sql_template', 'pattern': 'books_active'}
         },
         {
             'id': 'tpl_books_with_dim',
             'content': (
-                '查询模式: 按科目/年级/版本维度统计图书答疑活跃（需JOIN维度表）\n'
-                "SQL模板: SELECT b.books_id, b.name as book_name, d.subject_name, d.grade_name, "
+                '查询模式: 按类目/分层/版本维度统计产品使用活跃（需JOIN维度表）\n'
+                "SQL模板: SELECT b.books_id, b.name as product_name, d.subject_name, d.grade_name, "
                 "COUNT(DISTINCT b.uid) as active_users "
                 "FROM dwd_biz_mrg_bhv_books_user_detail b "
                 "LEFT JOIN dwd_biz_ubb_prod_books_detail d ON b.books_id = d.id "
                 "WHERE b.dt >= '{start_date}' AND b.dt < '{end_date}' "
                 "GROUP BY b.books_id, b.name, d.subject_name, d.grade_name "
                 "ORDER BY active_users DESC LIMIT 20\n"
-                '注意: 仅需书名不需JOIN维度表，事实表已内嵌 name；仅当需要科目、年级、版本、年份等额外元数据时才 LEFT JOIN dwd_biz_ubb_prod_books_detail\n'
-                '适用问题: "按科目看图书活跃"、"哪个年级的书最热门"、"人教版书使用情况"'
+                '注意: 仅需产品名不需JOIN维度表，事实表已内嵌 name；仅当需要类目、分层、版本、年份等额外元数据时才 LEFT JOIN dwd_biz_ubb_prod_books_detail\n'
+                '适用问题: "按类目看产品活跃"、"哪个分层的产品最热门"、"某版本产品使用情况"'
             ),
             'metadata': {'type': 'sql_template', 'pattern': 'books_with_dim'}
         },
@@ -197,7 +197,7 @@ def init_sql_templates(rag: RAGTool):
                 "WHERE dt_utc >= '{date}' AND dt_utc < '{next_date}' "
                 "AND std_event_name = '{event}'\n"
                 '注意: 事件字段是 raw_event_name(原始)和 std_event_name(标准化)，不是 event_name\n'
-                '适用问题: "做题事件用户数"、"某事件触发人数"'
+                '适用问题: "下单事件用户数"、"某事件触发人数"'
             ),
             'metadata': {'type': 'sql_template', 'pattern': 'event_filter'}
         }
@@ -235,7 +235,7 @@ def init_analysis_guidelines(rag: RAGTool):
                 '基线标准:\n'
                 '- 全APP日活基线: ~34786, 波动>20%视为异常\n'
                 '- 核心活跃基线: ~18862, 波动>20%视为异常\n'
-                '- 图书答疑基线: ~9121, 波动>25%视为异常\n'
+                '- 产品使用基线: ~9121, 波动>25%视为异常\n'
                 '- 新增用户基线: ~13167, 波动>30%视为异常\n'
                 '异常处理: 发现异常时必须给出可能原因和建议排查方向'
             ),
@@ -247,7 +247,7 @@ def init_analysis_guidelines(rag: RAGTool):
                 '口径规范:\n'
                 '1. "活跃"/"日活"/"DAU" → 必须用 dwd_biz_bhv_maidian_user_event_value_daily 表，COUNT(DISTINCT user_id)\n'
                 '2. 禁止UNION四分类表来算活跃\n'
-                '3. 图书表(dwd_biz_mrg_bhv_books_user_detail)用户字段名是 uid(varchar) 不是 user_id；图书字段是 books_id 不是 book_id；事实表内嵌 name(书名)字段，查询图书明细/TOP/排行时 SELECT 必须包含 name，禁止只返回 books_id 不带书名\n'
+                '3. 产品使用表(dwd_biz_mrg_bhv_books_user_detail)用户字段名是 uid(varchar) 不是 user_id；产品字段是 books_id 不是 book_id；事实表内嵌 name(产品名)字段，查询产品明细/TOP/排行时 SELECT 必须包含 name，禁止只返回 books_id 不带产品名\n'
                 '4. 新用户表(dwd_biz_mrg_usr_new_user)分区键为 date(DATE)，无 channel/platform/created_time 字段\n'
                 '5. 分区键差异：value_daily 与 core_behavior_daily 用 dt_utc(DATETIME)；books_user_detail 用 dt(DATETIME)；new_user 用 date(DATE)\n'
                 '6. DATETIME 类型分区键应使用 dt_utc >= \'YYYY-MM-DD\' AND dt_utc < \'次日\' 的左闭右开区间过滤\n'
@@ -296,7 +296,7 @@ def main():
     print('\n--- 检索测试 ---')
     test_queries = [
         '日活用户怎么查',
-        '图书答疑',
+        '产品使用',
         '数据异常怎么分析',
     ]
     for q in test_queries:

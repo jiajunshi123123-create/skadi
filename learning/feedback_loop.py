@@ -28,7 +28,7 @@ class FeedbackLoop:
     """
 
     def on_query_success(self, user_query: str, sql: str,
-                         result: dict, analysis: str):
+                         result: dict, analysis: str, role_id: str = ""):
         """
         查询成功回调 — 提取并存储模式。
 
@@ -52,29 +52,25 @@ class FeedbackLoop:
         except Exception as e:
             logger.error(f"[FeedbackLoop] 保存模式失败: {e}")
 
-        # 3. 向量化写入 ChromaDB（作为历史案例）
+        # 3. 向量化写入 ChromaDB。只存问题和 SQL，并按角色过滤。
         try:
-            doc_id = f'case_{abs(hash(user_query)) % 100000:05d}'
-            content = (
-                f'历史查询案例:\n'
-                f'问题: {user_query}\n'
-                f'SQL: {sql}\n'
-                f'分析摘要: {analysis[:300] if analysis else "无"}'
-            )
+            from learning.case_record import build_case
+
+            doc_id, content, metadata = build_case(role_id, user_query, sql)
+            metadata['pattern'] = pattern
             rag_tool.add_document(
                 doc_id=doc_id,
                 content=content,
-                metadata={
-                    'type': 'historical_case',
-                    'pattern': pattern
-                }
+                metadata=metadata,
+                collection_name='role_cases',
             )
             logger.info(f"[FeedbackLoop] 案例已写入知识库: {doc_id}")
         except Exception as e:
             logger.error(f"[FeedbackLoop] 写入知识库失败: {e}")
 
     def on_sql_self_heal(self, original_sql: str, error: str,
-                         fixed_sql: str, user_query: str):
+                         fixed_sql: str, user_query: str,
+                         table_name: str = None, error_type: str = None):
         """
         SQL自愈成功回调 — 记录为经验教训。
 
@@ -85,11 +81,15 @@ class FeedbackLoop:
             user_query: 用户原始查询
         """
         try:
+            from learning.lessons import classify_error
+
             pattern_store.save_lesson(
                 lesson_type='sql_fix',
                 original_query=user_query,
                 problem=f'SQL错误: {error}\n原始SQL: {original_sql}',
-                solution=f'修正后SQL: {fixed_sql}'
+                solution=f'修正后SQL: {fixed_sql}',
+                table_name=table_name,
+                error_type=error_type or classify_error(error),
             )
             logger.info(f"[FeedbackLoop] SQL自愈经验已记录")
         except Exception as e:
@@ -116,7 +116,7 @@ class FeedbackLoop:
         except Exception as e:
             logger.error(f"[FeedbackLoop] 保存分析反馈失败: {e}")
 
-    def get_context_for_query(self, user_query: str) -> dict:
+    def get_context_for_query(self, user_query: str, role_id: str = None) -> dict:
         """
         为新查询获取上下文信息（从知识库和模式库中检索）。
 
@@ -132,9 +132,15 @@ class FeedbackLoop:
             'recent_lessons': []
         }
 
-        # 从 ChromaDB 检索相关知识
+        # 从 ChromaDB 检索同一角色的历史案例。没有角色就不查，避免串角色。
         try:
-            context['rag_results'] = rag_tool.search(user_query, n_results=3)
+            if role_id:
+                context['rag_results'] = rag_tool.search(
+                    user_query,
+                    n_results=3,
+                    collection_name='role_cases',
+                    where={'role_id': role_id},
+                )
         except Exception as e:
             logger.error(f"[FeedbackLoop] RAG检索失败: {e}")
 
@@ -179,9 +185,9 @@ class FeedbackLoop:
             keywords.append('日活')
         if any(w in query for w in ['新增', '注册', '新用户']):
             keywords.append('新增用户')
-        if any(w in query for w in ['图书', '答疑']):
-            keywords.append('图书答疑')
-        if any(w in query for w in ['核心', '行为', '做题', '阅读']):
+        if any(w in query for w in ['产品', '商品', '内容']):
+            keywords.append('产品使用')
+        if any(w in query for w in ['核心', '行为', '下单', '浏览']):
             keywords.append('核心行为')
         if any(w in query for w in ['渠道', '来源']):
             keywords.append('渠道分析')

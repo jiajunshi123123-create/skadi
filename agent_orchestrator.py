@@ -81,6 +81,87 @@ analysis_agent = AnalysisAgent()
 # 节点函数
 # ============================================================
 
+def _lookup_cached_plan(state: dict):
+    """已验证且当前角色可读全部表时，跳过规划，返回填好参数的 SQL。
+
+    追问带着上一轮上下文，同一句短话在不同上下文里指的不是同一条 SQL。
+    last_context 非空时不读缓存，继续走规划。
+    """
+    if state.get("last_context"):
+        return None
+    role = state.get("user_role") or {}
+    role_id = role.get("role_id")
+    if not role_id:
+        return None
+    try:
+        from learning.query_cache import query_cache
+
+        def can_read(tables):
+            if role_id == "admin":
+                return True
+            allowed = {str(name).lower() for name in (role.get("allowed_tables") or [])}
+            return bool(tables) and all(str(name).lower() in allowed for name in tables)
+
+        hit = query_cache.lookup(state.get("user_query") or "", role_id, can_read)
+    except Exception as exc:
+        logger.warning("[Orchestrator] 查询缓存不可用，继续规划: %s", exc)
+        return None
+    if not hit:
+        return None
+    logger.info("[Orchestrator] 查询缓存命中 id=%s role=%s", hit.id, role_id)
+    return {"plan_task": {
+        "intent": "cached",
+        "sql": hit.sql,
+        "table": hit.tables[0] if hit.tables else "",
+        "from_cache": True,
+        "cache_id": hit.id,
+    }}
+
+
+def _remember_query_cache(state: dict, query_result: dict):
+    """成功查询写入缓存，并把 cache_id 放回 plan_task 和 query_result。
+
+    存的是注入强制条件之前的 SQL。命中后 QueryAgent 再按当前角色注入，
+    避免条件写两遍，角色的 mandatory_filters 变了也不会沿用旧条件。
+    返回的 id 给赞踩和后续成功计数用；candidate 靠这个 id 才能升成 verified。
+    追问（last_context 非空）不写缓存，避免「按渠道拆分」这类短句升成 verified 后被所有人复用。
+    """
+    if state.get("last_context"):
+        return None
+    role = state.get("user_role") or {}
+    role_id = role.get("role_id") or ""
+    plan = state.get("plan_task") if isinstance(state.get("plan_task"), dict) else {}
+    raw_sql = ""
+    if isinstance(query_result, dict):
+        raw_sql = query_result.get("sql_before_enforce") or ""
+    raw_sql = raw_sql or plan.get("sql") or ""
+    if not role_id or not raw_sql:
+        return None
+    try:
+        from learning.query_cache import query_cache
+        from permission_manager import permission_manager
+
+        cache_id = query_cache.observe_success(
+            question=state.get("user_query") or "",
+            sql=raw_sql,
+            role_id=role_id,
+            tables=permission_manager.extract_tables_from_sql(raw_sql),
+            cache_id=plan.get("cache_id"),
+        )
+    except Exception:
+        logger.exception("[Orchestrator] 写入查询缓存失败")
+        return None
+    if not cache_id:
+        return None
+    cache_id = int(cache_id)
+    if not isinstance(state.get("plan_task"), dict):
+        state["plan_task"] = plan
+    plan["cache_id"] = cache_id
+    if isinstance(query_result, dict):
+        query_result["cache_id"] = cache_id
+    return cache_id
+
+
 async def plan_node(state: AgentState) -> dict:
     """
     Plan Node: 理解用户需求 → 生成SQL执行计划
@@ -90,28 +171,9 @@ async def plan_node(state: AgentState) -> dict:
     """
     logger.info(f"[Orchestrator] Plan Node 开始处理")
 
-    # --- 自学习缓存快速通道 ---
-    try:
-        from learning.feedback_loop import feedback_loop
-        context = feedback_loop.get_context_for_query(state['user_query'])
-        if context and context.get('similar_patterns'):
-            pattern = context['similar_patterns']
-            # 成熟度 >= 0.3 且出现次数 >= 3 时命中缓存
-            if pattern.get('maturity', 0) >= 0.3 and pattern.get('occurrence_count', 0) >= 3:
-                logger.info(f"[Orchestrator] 缓存命中 pattern={pattern.get('pattern_id','?')}, "
-                           f"maturity={pattern.get('maturity')}, count={pattern.get('occurrence_count')}")
-                cached_sql = pattern.get('common_sql', [''])[0]
-                if cached_sql:
-                    return {'plan_task': {
-                        'intent': f"cached_{pattern.get('pattern_id', 'unknown')}",
-                        'sql': cached_sql,
-                        'table': '',  # Query Agent 会自动处理
-                        'from_cache': True,
-                        'cache_maturity': pattern.get('maturity', 0),
-                    }}
-    except Exception as e:
-        logger.warning(f"[Orchestrator] 缓存检测失败，走正常流程: {e}")
-    # --- 结束缓存快速通道 ---
+    cached = _lookup_cached_plan(state)
+    if cached:
+        return cached
 
     try:
         user_role = state.get('user_role')
@@ -217,42 +279,16 @@ async def query_node(state: AgentState) -> dict:
     logger.info(f"[Orchestrator] Query Node 开始执行")
     try:
         user_role = state.get('user_role')
-        # L3: SQL硬注入 - 在执行前进行权限校验和条件注入
-        if user_role and user_role.get('role_id') != 'admin':
-            from permission_manager import permission_manager, PermissionDenied
-            plan_task = state['plan_task']
-            sql = plan_task.get('sql', '')
-            try:
-                enforced_sql = permission_manager.enforce_sql(sql, user_role)
-                plan_task = {**plan_task, 'sql': enforced_sql}
-                # 记录审计
-                permission_manager.log_permission_audit(
-                    staff_id=user_role.get('staff_id', ''),
-                    staff_name=user_role.get('staff_name', ''),
-                    role_id=user_role.get('role_id', ''),
-                    action='query',
-                    original_sql=sql,
-                    enforced_sql=enforced_sql,
-                    tables_accessed=permission_manager.extract_tables_from_sql(sql)
-                )
-            except PermissionDenied as e:
-                # 记录拒绝审计
-                permission_manager.log_permission_audit(
-                    staff_id=user_role.get('staff_id', ''),
-                    staff_name=user_role.get('staff_name', ''),
-                    role_id=user_role.get('role_id', ''),
-                    action='denied',
-                    original_sql=sql,
-                    denied_reason=str(e),
-                    tables_accessed=permission_manager.extract_tables_from_sql(sql)
-                )
-                return {'error': f'🔒 权限不足: {e.message}'}
-        else:
-            plan_task = state['plan_task']
-
-        # 将 user_query 注入 plan_task，供 QueryAgent 自愈时记录 lesson
-        result = await query_agent.execute({**plan_task, 'user_query': state.get('user_query', '')})
+        plan_task = state['plan_task']
+        # 权限校验放在 QueryAgent 的每一次执行里（含自愈后的 SQL）。
+        result = await query_agent.execute(
+            {**plan_task, 'user_query': state.get('user_query', '')},
+            user_role=user_role,
+        )
         
+        if result.get('permission_denied'):
+            return {'error': result.get('error') or '权限不足'}
+
         if not result.get('success'):
             error_msg = result.get('error', '查询执行失败')
             retries = result.get('retries', 0)
@@ -416,7 +452,8 @@ async def format_output(state: AgentState) -> dict:
     - 异常流程: 使用错误信息生成友好提示
     """
     duration = time.time() - state['start_time']
-    
+    cache_id = None
+
     if state.get('error'):
         # 错误兜底回复
         reply = (
@@ -444,18 +481,25 @@ async def format_output(state: AgentState) -> dict:
                 gaps = analysis_plan['data_gaps']
                 gap_text = '; '.join(g['field'] for g in gaps[:3])
                 reply += f"\n\n⚠️ 数据缺口: {gap_text}"
+        # 缓存 id 要写回状态，不能跟自学习绑在同一个 try 里，否则经验库失败时候选行永远升不了级。
+        query_result = state.get('query_result') or {}
+        try:
+            cache_id = _remember_query_cache(state, query_result)
+        except Exception:
+            logger.exception("[Orchestrator] 写入查询缓存失败")
         # 触发自学习（失败不阻塞主流程）
         try:
             from learning.feedback_loop import feedback_loop
             from learning.pattern_store import pattern_store
             from learning.memory_consolidator import memory_consolidator
-            query_result = state.get('query_result') or {}
             user_query = state.get('user_query', '')
+            role = state.get('user_role') or {}
             feedback_loop.on_query_success(
                 user_query=user_query,
                 sql=query_result.get('sql_executed', ''),
                 result=query_result,
-                analysis=reply
+                analysis=reply,
+                role_id=role.get('role_id') or '',
             )
             # 记录成功查询为最佳实践（写入 lessons 表）
             if query_result.get('sql_executed') and user_query:
@@ -494,7 +538,15 @@ async def format_output(state: AgentState) -> dict:
     # DingTalk 消息限制约20KB，超出会导致发送失败
     reply = truncate_for_dingtalk(reply)
 
-    return {'final_reply': reply}
+    updates = {'final_reply': reply}
+    if cache_id:
+        plan = state.get('plan_task')
+        if isinstance(plan, dict):
+            updates['plan_task'] = plan
+        stored_result = state.get('query_result')
+        if isinstance(stored_result, dict):
+            updates['query_result'] = stored_result
+    return updates
 
 
 # ============================================================

@@ -17,18 +17,19 @@ COPY . .
 
 # 暴露端口
 # 8080 - Web 前端服务
-# 可选: 钉钉 Bot 不需要端口
+# 钉钉 / 飞书 Bot 不监听端口，健康检查看心跳文件。
 EXPOSE 8080
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+# 镜像默认跑 Web。容器里必须监听 0.0.0.0，端口映射才进得来。
+# 本机直接 `python web_server.py` 不走这个 ENV，仍默认 127.0.0.1。
+ENV WEB_BIND_HOST=0.0.0.0
 
-# 默认启动 Web 服务（钉钉 Bot 需显式覆盖 CMD）
-# 容器内监听 0.0.0.0，否则 docker 端口映射到不了进程。
-# 宿主机暴露范围由 docker-compose 的 ports 决定（默认仅 127.0.0.1）。
-# 直接 `python web_server.py` 时默认只绑定 127.0.0.1，见 WEB_BIND_HOST。
+# 打到 /health，不带密钥，响应里也没有配置。
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+
 # 用法:
 #   Web 服务:   docker run ... (默认)
 #   钉钉 Bot:   docker run ... python dingtalk_bot.py
-CMD ["python", "-m", "uvicorn", "web_server:app", "--host", "0.0.0.0", "--port", "8080"]
+#   飞书 Bot:   docker run ... python -m channels.feishu
+CMD ["python", "-m", "config.entrypoint", "web"]

@@ -53,7 +53,7 @@ class QueryAgent:
         with open(prompt_path, 'r', encoding='utf-8') as f:
             return f.read()
 
-    async def execute(self, plan_task: dict) -> dict:
+    async def execute(self, plan_task: dict, user_role: dict = None) -> dict:
         """
         执行SQL查询，支持自愈重试。
 
@@ -78,7 +78,16 @@ class QueryAgent:
         for attempt in range(self.max_retries + 1):
             logger.info(f"[QueryAgent] 执行SQL (尝试 {attempt + 1}/{self.max_retries + 1}): {sql[:80]}...")
 
-            result = self._run_query(sql)
+            result = self._run_query(sql, user_role)
+            if result.get('permission_denied'):
+                logger.error("[QueryAgent] 权限拒绝，停止自愈: %s", result.get('error'))
+                return {
+                    'success': False,
+                    'error': result.get('error') or '权限不足',
+                    'sql_attempted': sql,
+                    'retries': attempt,
+                    'permission_denied': True,
+                }
 
             if result['success']:
                 # ---- 空结果验证：区分"真无数据"与"SQL逻辑错误" ----
@@ -112,7 +121,8 @@ class QueryAgent:
                         )
                 # ---- 空结果验证结束 ----
 
-                result['sql_executed'] = sql
+                result['sql_executed'] = result.get('sql_executed') or sql
+                result.setdefault('sql_before_enforce', sql)
                 result['retries'] = attempt
                 logger.info(f"[QueryAgent] 查询成功，返回 {result.get('row_count', 0)} 行")
                 # 自愈成功（重试后才成功）时，记录为 lesson
@@ -122,11 +132,13 @@ class QueryAgent:
                         feedback_loop.on_sql_self_heal(
                             original_sql=plan_task.get('sql', ''),
                             error=last_error,
-                            fixed_sql=sql,
-                            user_query=''  # 这里没有 user_query 上下文
+                            fixed_sql=result.get('sql_executed') or sql,
+                            user_query=plan_task.get('user_query') or '',
+                            table_name=self._extract_table_name(plan_task.get('sql', '') or sql),
+                            error_type=None,
                         )
                     except Exception:
-                        pass
+                        logger.exception("[QueryAgent] 记录自愈经验失败")
                 return result
 
             last_error = result['error']
@@ -150,14 +162,32 @@ class QueryAgent:
             'retries': min(attempt + 1, self.max_retries)
         }
 
-    def _run_query(self, sql: str) -> dict:
+    def _run_query(self, sql: str, user_role: dict = None) -> dict:
         """
         通过统一数据源适配器执行查询。
         适配器内置 SQL 安全检查和 EXPLAIN 校验。
+        角色权限在 EXPLAIN 和真正执行之前处理，自愈后的 SQL 会再次进入这里。
 
         [历史] 旧实现通过 subprocess 调用 starrocks_query_safe.py，
         现已迁移为 DatabaseAdapter 直连方式，支持 MySQL/PG/StarRocks。
         """
+        from agents.sql_guard import log_enforcement, prepare_sql
+        from permission_manager import PermissionDenied
+
+        original_sql = sql
+        try:
+            sql = prepare_sql(sql, user_role)
+        except PermissionDenied as exc:
+            log_enforcement(user_role, "denied", original_sql, denied_reason=str(exc))
+            logger.error("[QueryAgent] 拒绝执行: %s", exc)
+            return {
+                'success': False,
+                'error': f"权限不足: {exc}",
+                'permission_denied': True,
+                'cols': [], 'rows': [], 'row_count': 0,
+            }
+        log_enforcement(user_role, "query", original_sql, enforced_sql=sql)
+
         # === P1-3: PreSQLUse Hook — SQL执行前校验 ===
         hook_result = pre_sql_hook.validate(sql)
         if hook_result.exit_code == HookExitCode.BLOCK:
@@ -182,8 +212,13 @@ class QueryAgent:
                 'cols': [], 'rows': [], 'row_count': 0
             }
 
-        # 执行实际查询
-        return self.db.execute(sql)
+        # 执行实际查询。返回的 SQL 是已经注入权限条件的版本。
+        result = self.db.execute(sql)
+        if isinstance(result, dict) and result.get('success'):
+            result['sql_executed'] = sql
+            # 缓存用注入强制条件之前的 SQL，命中后按当前角色再注入一次。
+            result['sql_before_enforce'] = original_sql
+        return result
 
     def _extract_table_name(self, sql: str) -> Optional[str]:
         """
@@ -234,6 +269,11 @@ class QueryAgent:
             'table_name': table_name,
         }
 
+    def _lesson_advice(self, failed_sql: str, error: str) -> str:
+        from learning.lessons import advice_for_error
+
+        return advice_for_error(self._extract_table_name(failed_sql) or "", error)
+
     async def _self_heal(self, failed_sql: str, error: str, plan_task: dict) -> Optional[str]:
         """
         分析错误，调用LLM修正SQL。
@@ -257,11 +297,13 @@ class QueryAgent:
 数据字典参考:
 - table_dau_events: dt_utc(DATETIME分区键), user_id, raw_event_name, std_event_name, event_value
 - table_core_behavior: dt_utc(DATETIME分区键), user_id, event_cnt, user_cnt
-- table_product_usage: dt(DATETIME分区键), uid(不是user_id), books_id(不是book_id), name(书名，事实表内嵌)
+- table_product_usage: dt(DATETIME分区键), uid(不是user_id), product_id, name(产品名，事实表内嵌)
 - table_new_users: date(DATE分区键), user_id
 
 请只输出修正后的SQL（纯SQL，不要包含解释文字或代码块标记）。
-如果无法修正，输出: CANNOT_FIX"""
+如果无法修正，输出: CANNOT_FIX
+
+{self._lesson_advice(failed_sql, error)}"""
 
         messages = [
             SystemMessage(content=self.system_prompt),

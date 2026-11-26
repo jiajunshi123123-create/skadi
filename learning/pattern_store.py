@@ -114,10 +114,9 @@ class PatternStore:
             with self._get_conn() as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     # 提取关键词进行模糊匹配
-                    keywords = [
-                        kw for kw in query.replace('？', '').replace('?', '').split()
-                        if len(kw) > 1
-                    ]
+                    from learning.pattern_text import keywords_for_match
+
+                    keywords = keywords_for_match(query)
                     if not keywords:
                         return []
 
@@ -138,7 +137,8 @@ class PatternStore:
             return []
 
     def save_lesson(self, lesson_type: str, original_query: str,
-                    problem: str, solution: str):
+                    problem: str, solution: str, table_name: str = None,
+                    error_type: str = None):
         """
         保存经验教训（带去重）。
 
@@ -162,16 +162,19 @@ class PatternStore:
                     if existing:
                         # Update existing record instead of inserting duplicate
                         cur.execute(
-                            "UPDATE lessons SET problem = %s, solution = %s, updated_at = NOW() "
+                            "UPDATE lessons SET problem = %s, solution = %s, "
+                            "table_name = COALESCE(%s, table_name), "
+                            "error_type = COALESCE(%s, error_type), updated_at = NOW() "
                             "WHERE id = %s",
-                            (problem, solution, existing[0])
+                            (problem, solution, table_name, error_type, existing[0])
                         )
                         logger.info(f"[PatternStore] Updated existing lesson (id={existing[0]}, age=N/A)")
                     else:
                         cur.execute(
-                            "INSERT INTO lessons (lesson_type, original_query, problem, solution) "
-                            "VALUES (%s, %s, %s, %s)",
-                            (lesson_type, original_query, problem, solution)
+                            "INSERT INTO lessons "
+                            "(lesson_type, original_query, problem, solution, table_name, error_type) "
+                            "VALUES (%s, %s, %s, %s, %s, %s)",
+                            (lesson_type, original_query, problem, solution, table_name, error_type)
                         )
                 conn.commit()
         except Exception as e:
@@ -207,6 +210,36 @@ class PatternStore:
                     return [dict(r) for r in cur.fetchall()]
         except Exception as e:
             logger.error(f"[PatternStore] 获取教训失败: {e}")
+            return []
+
+    def get_lessons_for_table(self, table_name: str, error_type: str = None, limit: int = 5) -> list:
+        """只取某张表、某种错误的教训。"""
+        if not table_name:
+            return []
+        short_name = table_name.split('.')[-1]
+        try:
+            with self._get_conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    if error_type:
+                        cur.execute(
+                            "SELECT lesson_type, original_query, problem, solution, "
+                            "table_name, error_type, created_at "
+                            "FROM lessons WHERE lower(table_name) = lower(%s) "
+                            "AND error_type = %s "
+                            "ORDER BY updated_at DESC NULLS LAST LIMIT %s",
+                            (short_name, error_type, limit),
+                        )
+                    else:
+                        cur.execute(
+                            "SELECT lesson_type, original_query, problem, solution, "
+                            "table_name, error_type, created_at "
+                            "FROM lessons WHERE lower(table_name) = lower(%s) "
+                            "ORDER BY updated_at DESC NULLS LAST LIMIT %s",
+                            (short_name, limit),
+                        )
+                    return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"[PatternStore] 按表读取教训失败: {e}")
             return []
 
     def get_pattern_stats(self) -> dict:
@@ -335,7 +368,7 @@ class PatternStore:
 
         当两个模式关键词相似但SQL结构不同时，可能存在口径冲突。
         例如：
-        - 模式A: "单日查询+日活" → SELECT FROM dws_biz_dayi_user_login_daily_stats
+        - 模式A: "单日查询+日活" → SELECT FROM dws_biz_dau_daily_stats
         - 模式B: "单日查询+日活" → SELECT FROM qb_event_log  (冲突!)
 
         Args:

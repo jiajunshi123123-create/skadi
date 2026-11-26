@@ -6,9 +6,41 @@ services:
     build: .
     container_name: ai-data-web
     env_file: .env
+    environment:
+      # .env 里的 WEB_BIND_HOST 往往是 127.0.0.1，那只适合本机进程。
+      # 容器里必须监听 0.0.0.0，上面的端口映射才有效。
+      WEB_BIND_HOST: 0.0.0.0
     ports:
       # 只绑定宿主机回环地址。需要对局域网开放时再改成 "8080:8080"。
       - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ========== 飞书 Bot（长连接，只处理私聊） ==========
+  feishu:
+    build: .
+    container_name: ai-data-feishu
+    env_file: .env
+    command: python -m channels.feishu
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; p=os.environ.get('HEARTBEAT_PATH','/tmp/skadi-heartbeat'); age=time.time()-os.stat(p).st_mtime; sys.exit(0 if age<90 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -25,6 +57,12 @@ services:
     container_name: ai-data-agent
     env_file: .env
     command: python dingtalk_bot.py
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; p=os.environ.get('HEARTBEAT_PATH','/tmp/skadi-heartbeat'); age=time.time()-os.stat(p).st_mtime; sys.exit(0 if age<90 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,6 +84,7 @@ services:
     entrypoint: ["sh", "/usr/local/bin/require_strong_pg_password.sh"]
     volumes:
       - pg_data:/var/lib/postgresql/data
+      # 仅空数据卷会执行。已有 pg_data 时请按 scripts/MIGRATION.md 跑 migrate.sql。
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./scripts/require_strong_pg_password.sh:/usr/local/bin/require_strong_pg_password.sh:ro
     healthcheck:

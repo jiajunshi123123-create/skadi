@@ -24,15 +24,15 @@ PARTITION_KEY_PATTERNS = [
 
 # 常见字段名到业务语义的映射
 FIELD_SEMANTIC_MAP = {
-    "user_id": "用户ID", "uid": "用户ID", "student_id": "学生ID",
+    "user_id": "用户ID", "uid": "用户ID", "student_id": "用户ID",
     "order_id": "订单ID", "transaction_id": "交易ID",
     "amount": "金额", "price": "价格", "revenue": "收入",
-    "city": "城市", "province": "省份", "grade": "年级", "subject": "学科",
-    "product_id": "产品ID", "course_id": "课程ID", "book_id": "图书ID",
+    "city": "城市", "province": "省份", "grade": "等级", "subject": "主题",
+    "product_id": "产品ID", "course_id": "项目ID", "book_id": "内容ID",
     "status": "状态", "type": "类型", "source": "来源",
     "event_type": "事件类型", "action": "行为",
     "login_cnt": "登录次数", "active_minutes": "活跃时长",
-    "question_cnt": "题目数", "answer_cnt": "答题数",
+    "question_cnt": "交互次数", "answer_cnt": "响应次数",
     "retention_rate": "留存率", "conversion_rate": "转化率",
 }
 
@@ -76,15 +76,15 @@ def guess_domain(table_name: str) -> str:
     if any(k in name for k in ("order", "pay", "revenue", "amount", "交易", "付费")):
         return "交易与营收"
     if any(k in name for k in ("book", "图书", "read", "阅读")):
-        return "图书业务"
+        return "内容与商品"
     if any(k in name for k in ("qa", "answer", "question", "答疑", "解题", "essay", "作文")):
-        return "答疑与内容"
+        return "互动与会话"
     if any(k in name for k in ("ad", "advert", "广告", "promotion", "campaign")):
         return "广告与营销"
     if any(k in name for k in ("member", "vip", "会员", "subscribe")):
         return "会员体系"
     if any(k in name for k in ("course", "课程", "class", "tifen", "提分")):
-        return "课程与提分"
+        return "项目与服务"
     return "其他"
 
 

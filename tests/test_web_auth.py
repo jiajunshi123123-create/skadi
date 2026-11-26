@@ -149,7 +149,7 @@ class ConfigDefaultTests(unittest.TestCase):
         self.assertNotIn("aliyuncs.com", text)
         self.assertNotIn("WanWei_", text)
         self.assertNotIn("app_prod_db", text)
-        self.assertIn("os.getenv('DB_USER', '')", text)
+        self.assertIn('read_setting(\'DB_USER\', \'STARROCKS_USER\', default=\'\')', text)
         example = (root / ".env.example").read_text(encoding="utf-8")
         self.assertIn("DB_USER=readonly_user", example)
         self.assertNotIn("DB_USER=root", example)

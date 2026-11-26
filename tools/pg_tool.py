@@ -68,11 +68,11 @@ def log_audit(
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO audit_logs 
-                    (user_id, query, response, duration_ms, tokens, status, sql_executed, agent_path, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (user_id, query, response, duration_ms, tokens, status, sql_executed, agent_path, action, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     user_id, query, response[:5000], duration_ms,
-                    tokens, status, sql_executed, agent_path,
+                    tokens, status, sql_executed, agent_path, 'query',
                     datetime.now()
                 ))
             conn.commit()

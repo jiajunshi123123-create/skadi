@@ -136,6 +136,45 @@ class PermissionManager:
             # 异常时默认拒绝（安全优先）
             return None
 
+    def get_role_definition(self, role_id: str) -> Optional[dict]:
+        """按 role_id 取角色。Web 密钥映射使用，不依赖某个 staff_id。"""
+        if not role_id:
+            return None
+        cached = self._role_def_cache.get(role_id)
+        if cached and cached['expires_at'] > time.time():
+            return cached['data']
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT role_id, role_name, allowed_tables, mandatory_filters,
+                               max_query_days, allow_user_detail
+                        FROM role_definitions
+                        WHERE role_id = %s AND is_active = TRUE
+                    """, (role_id,))
+                    row = cur.fetchone()
+            if not row:
+                logger.warning("[PermissionManager] 未找到角色: %s", role_id)
+                return None
+            role_data = {
+                'staff_id': f'web:{role_id}',
+                'staff_name': row['role_name'] or '',
+                'role_id': row['role_id'],
+                'role_name': row['role_name'],
+                'allowed_tables': row['allowed_tables'] or [],
+                'mandatory_filters': row['mandatory_filters'] or {},
+                'max_query_days': row['max_query_days'] or 30,
+                'allow_user_detail': row['allow_user_detail'] or False,
+            }
+            self._role_def_cache[role_id] = {
+                'data': role_data,
+                'expires_at': time.time() + CACHE_TTL_SECONDS,
+            }
+            return role_data
+        except Exception as e:
+            logger.error("[PermissionManager] 查询角色定义异常: %s", e)
+            return None
+
     def get_allowed_tables(self, user_role: dict) -> list:
         """获取角色可查询的表白名单"""
         return user_role.get('allowed_tables', [])
@@ -155,65 +194,20 @@ class PermissionManager:
         return filters
 
     def extract_tables_from_sql(self, sql: str) -> list:
-        """
-        从SQL语句中提取所有引用的表名（FROM、JOIN）。
-
-        使用 sqlparse 解析 + 正则兜底，确保提取准确。
-
-        Args:
-            sql: SQL语句
-
-        Returns:
-            去重后的表名列表
-        """
-        tables = set()
-
-        # 方法1: 正则提取（兜底，覆盖大部分情况）
-        pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
-        matches = re.findall(pattern, sql, re.IGNORECASE)
-        for m in matches:
-            if m.upper() not in ('SELECT', 'WHERE', 'AND', 'OR', 'ON', 'AS', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'CROSS', 'NATURAL', 'FULL'):
-                tables.add(m.lower())
-
-        # 方法2: sqlparse AST解析（更精确）
-        try:
-            import sqlparse
-            from sqlparse.sql import IdentifierList, Identifier, Parenthesis
-            from sqlparse.tokens import Keyword
-            parsed = sqlparse.parse(sql)
-            for statement in parsed:
-                self._extract_tables_from_token(statement, tables)
-        except Exception as e:
-            logger.debug(f"[PermissionManager] sqlparse解析异常(使用正则兜底): {e}")
-
-        return list(tables)
-
-    def _extract_tables_from_token(self, token, tables: set):
-        """递归从sqlparse token树中提取表名"""
-        from_seen = False
-        import sqlparse
-        from sqlparse.sql import IdentifierList, Identifier, Parenthesis
-        from sqlparse.tokens import Keyword
-        for item in token.tokens:
-            if item.ttype is Keyword and item.value.upper() in ('FROM', 'JOIN', 'INNER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'LEFT OUTER JOIN', 'RIGHT OUTER JOIN', 'FULL JOIN', 'CROSS JOIN'):
-                from_seen = True
-            elif from_seen:
-                if isinstance(item, Identifier):
-                    name = item.get_name()
-                    if name:
-                        tables.add(name.lower())
-                    from_seen = False
-                elif isinstance(item, IdentifierList):
-                    for identifier in item.get_identifiers():
-                        if isinstance(identifier, Identifier):
-                            name = identifier.get_name()
-                            if name:
-                                tables.add(name.lower())
-                    from_seen = False
-                elif item.ttype is not sqlparse.tokens.Whitespace:
-                    from_seen = False
-            if isinstance(item, Parenthesis):
-                self._extract_tables_from_token(item, tables)
+        """提取真实表名。CTE 的名字不算表，避免把 WITH 别名放进白名单判断。"""
+        expression, _dialect = self._parse_sql(sql)
+        if expression is None:
+            return []
+        ctes = self._cte_names(expression)
+        tables = []
+        seen = set()
+        for table in expression.find_all(self._table_type()):
+            name = (table.name or "").lower()
+            if not name or name in ctes or name in seen:
+                continue
+            seen.add(name)
+            tables.append(name)
+        return tables
 
     def check_sql_permission(self, sql: str, user_role: dict) -> tuple:
         """
@@ -292,58 +286,85 @@ class PermissionManager:
         if not mandatory_filters:
             return sql
 
-        # 提取SQL中使用的表名，对匹配的表注入条件
-        tables_in_sql = self.extract_tables_from_sql(sql)
-        conditions_to_inject = []
-        for table in tables_in_sql:
-            table_lower = table.lower()
-            for filter_table, filter_condition in mandatory_filters.items():
-                if filter_table.lower() == table_lower:
-                    conditions_to_inject.append(filter_condition)
-
-        if not conditions_to_inject:
-            return sql
-
-        # 注入WHERE条件
-        enforced_sql = self._inject_where_conditions(sql, conditions_to_inject)
-        logger.info(f"[PermissionManager] SQL权限注入: 追加 {len(conditions_to_inject)} 个条件")
+        enforced_sql = self._inject_where_conditions(sql, mandatory_filters)
+        logger.info("[PermissionManager] SQL权限注入完成")
         return enforced_sql
 
-    def _inject_where_conditions(self, sql: str, conditions: list) -> str:
-        """
-        在SQL的WHERE子句中追加强制条件。
+    def _inject_where_conditions(self, sql: str, filters: dict) -> str:
+        """把每张表自己的强制条件写进引用它的 SELECT。CTE 名字不会被当成表。"""
+        expression, dialect = self._parse_sql(sql)
+        if expression is None:
+            raise PermissionDenied("SQL无法解析，已拒绝执行")
+        by_table = {str(name).lower(): condition for name, condition in (filters or {}).items()}
+        ctes = self._cte_names(expression)
+        applied_on = set()
+        for table in expression.find_all(self._table_type()):
+            name = (table.name or "").lower()
+            raw = by_table.get(name)
+            if not name or name in ctes or not raw:
+                continue
+            select = self._select_of(table)
+            if select is None:
+                continue
+            marker = (id(select), name, raw)
+            if marker in applied_on:
+                continue
+            select.where(self._parse_predicate(raw, dialect), append=True, copy=False)
+            applied_on.add(marker)
+        if not applied_on:
+            return sql
+        return expression.sql(dialect=dialect)
 
-        策略：
-        - 如果已有WHERE：在WHERE后的条件外包一层括号，再AND追加
-        - 如果没有WHERE：在FROM子句后、GROUP BY/ORDER BY/LIMIT前插入WHERE
-        """
-        combined_condition = " AND ".join(f"({c})" for c in conditions)
+    def _parse_sql(self, sql: str):
+        try:
+            import sqlglot
+            from sqlglot.errors import SqlglotError
+        except ImportError:
+            logger.error("[PermissionManager] 未安装 sqlglot，拒绝执行")
+            return None, None
+        for dialect in ("mysql", "postgres"):
+            try:
+                return sqlglot.parse_one(sql, read=dialect), dialect
+            except SqlglotError:
+                continue
+        logger.info("[PermissionManager] SQL 无法解析，按拒绝处理")
+        return None, None
 
-        # 检查是否已有WHERE
-        where_match = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
+    def _parse_predicate(self, raw: str, dialect: str):
+        import sqlglot
+        from sqlglot.errors import SqlglotError
 
-        if where_match:
-            # 已有WHERE：在WHERE关键字后的原始条件前加括号，然后AND追加
-            where_pos = where_match.end()
-            # 找到WHERE之后到GROUP BY/ORDER BY/LIMIT/结尾的范围
-            tail_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|UNION)\b', sql[where_pos:], re.IGNORECASE)
-            if tail_match:
-                tail_start = where_pos + tail_match.start()
-                original_condition = sql[where_pos:tail_start].strip()
-                enforced = sql[:where_pos] + f" ({original_condition}) AND {combined_condition} " + sql[tail_start:]
-            else:
-                original_condition = sql[where_pos:].strip()
-                enforced = sql[:where_pos] + f" ({original_condition}) AND {combined_condition}"
-        else:
-            # 没有WHERE：在FROM子句后插入
-            tail_match = re.search(r'\b(GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING|UNION)\b', sql, re.IGNORECASE)
-            if tail_match:
-                insert_pos = tail_match.start()
-                enforced = sql[:insert_pos] + f" WHERE {combined_condition} " + sql[insert_pos:]
-            else:
-                enforced = sql + f" WHERE {combined_condition}"
+        try:
+            return sqlglot.parse_one(raw, read=dialect or "mysql")
+        except SqlglotError as exc:
+            raise PermissionDenied(f"强制过滤条件无法解析: {raw}") from exc
 
-        return enforced
+    def _cte_names(self, expression) -> set:
+        names = set()
+        for cte in expression.find_all(self._cte_type()):
+            alias = getattr(cte, "alias", None) or ""
+            if alias:
+                names.add(str(alias).lower())
+        return names
+
+    def _select_of(self, table):
+        select_type = self._select_type()
+        node = table.parent
+        while node is not None and not isinstance(node, select_type):
+            node = node.parent
+        return node
+
+    def _table_type(self):
+        from sqlglot import exp
+        return exp.Table
+
+    def _cte_type(self):
+        from sqlglot import exp
+        return exp.CTE
+
+    def _select_type(self):
+        from sqlglot import exp
+        return exp.Select
 
     def clear_cache(self, staff_id: str = None):
         """清除缓存（手动刷新权限时使用）"""
