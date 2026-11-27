@@ -49,7 +49,7 @@ logger = logging.getLogger("dingtalk_bot")
 class BotHandler(ChatbotHandler):
     def __init__(self, conversation: ConversationService = None, deduper: MessageDeduper = None):
         super().__init__()
-        self.conversation = conversation or ConversationService()
+        self.conversation = conversation or ConversationService(deliver_assets=self._deliver_assets)
         self.deduper = deduper or MessageDeduper()
 
     async def process(self, callback_message):
@@ -61,6 +61,8 @@ class BotHandler(ChatbotHandler):
 
             def send(text: str) -> None:
                 self.reply_text(text, cbm)
+
+            self._dingtalk_reply = cbm
 
             if route == ROUTE_DUPLICATE:
                 logger.info("忽略重复消息 msg_id=%s", incoming.msg_id)
@@ -88,6 +90,27 @@ class BotHandler(ChatbotHandler):
                 logger.exception("钉钉错误回复发送失败")
         return AckMessage.STATUS_OK, "ok"
 
+    def _deliver_assets(self, user, message, artifacts: dict) -> None:
+        from reports.deliver import deliver_dingtalk
+
+        cbm = getattr(self, "_dingtalk_reply", None)
+        folder = artifacts.get("dir") or ""
+        paths = {name: os.path.join(folder, name) for name in artifacts.get("files") or []}
+        markdown = getattr(self, "reply_markdown", None)
+        image = getattr(self, "reply_image", None)
+
+        def send_markdown(title, body):
+            if markdown is None or cbm is None:
+                return
+            markdown(title, body, cbm)
+
+        def send_image(path):
+            if image is None or cbm is None:
+                return
+            image(path, cbm)
+
+        deliver_dingtalk(send_markdown if markdown else None, send_image if image else None, "分析报告", "", {"paths": paths})
+
     def _handle_blocking(self, incoming, send) -> None:
         asyncio.run(self.conversation.handle(incoming, send))
 
@@ -98,6 +121,12 @@ def main() -> None:
 
     require_entrypoint("dingtalk")
     start_heartbeat()
+    try:
+        from reports.scheduler import start_inprocess
+
+        start_inprocess()
+    except Exception:
+        logger.exception("定时报告没有随钉钉进程启动")
     key = os.environ.get("DINGTALK_BOT_APP_KEY", "")
     secret = os.environ.get("DINGTALK_BOT_APP_SECRET", "")
     client = DingTalkStreamClient(Credential(key, secret))

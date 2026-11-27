@@ -98,6 +98,8 @@ class ConversationService:
         delete_session: Optional[Callable] = None,
         save_task: Optional[Callable] = None,
         on_feedback: Optional[Callable] = None,
+        deliver_assets: Optional[Callable] = None,
+        schedules=None,
         clock=time.time,
         context_ttl: int = CONTEXT_TTL_SECONDS,
         suggestion_ttl: int = SUGGESTION_TTL_SECONDS,
@@ -110,6 +112,8 @@ class ConversationService:
         self._delete_session = delete_session
         self._save_task = save_task
         self._on_feedback = on_feedback
+        self.deliver_assets = deliver_assets
+        self.schedules = schedules
         self.clock = clock
         self.context_ttl = context_ttl
         self.suggestion_ttl = suggestion_ttl
@@ -161,6 +165,11 @@ class ConversationService:
             send(FEEDBACK_TEXT)
             return
 
+        schedule_reply = self._schedule_reply(text, user, message)
+        if schedule_reply is not None:
+            send(schedule_reply)
+            return
+
         send(ANALYZING_TEXT)
         last_context = self._load_context(user) if is_follow_up(text) else None
         try:
@@ -184,6 +193,26 @@ class ConversationService:
         visible, marked_sql = strip_sql_marker(reply)
         self._remember(user, message_text=text, visible=visible, sql=marked_sql, metadata=metadata or {})
         send(visible)
+        self._deliver_report(user, message, visible, metadata or {})
+
+    def _schedule_reply(self, text: str, user: ResolvedUser, message: IncomingMessage):
+        try:
+            from reports.schedule_commands import handle_schedule_command
+        except Exception:
+            logger.exception("定时报告模块不可用")
+            return None
+        return handle_schedule_command(text, user, message, self.schedules)
+
+    def _deliver_report(self, user: ResolvedUser, message: IncomingMessage, visible: str, metadata: dict) -> None:
+        if not metadata.get("report") or self.deliver_assets is None:
+            return
+        try:
+            from reports.files import materialize_report
+
+            artifacts = materialize_report(user.user_id, visible, metadata)
+            self.deliver_assets(user, message, artifacts)
+        except Exception:
+            logger.exception("报告附件发送失败 user_id=%s", user.user_id)
 
     def _limited(self, message: IncomingMessage) -> bool:
         checker = self.rate_limit

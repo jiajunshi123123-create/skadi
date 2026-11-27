@@ -248,6 +248,51 @@ class FeishuApi:
         body = json.dumps({"text": _clip(text)}, ensure_ascii=False)
         return self._send(open_id, "text", body)
 
+    def upload_image(self, path: str) -> str:
+        from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
+
+        with open(path, "rb") as handle:
+            request = (
+                CreateImageRequest.builder()
+                .request_body(
+                    CreateImageRequestBody.builder()
+                    .image_type("message")
+                    .image(handle)
+                    .build()
+                )
+                .build()
+            )
+            response = self._sdk().im.v1.image.create(request)
+        _ensure_success(response, "上传图片")
+        return str(response.data.image_key)
+
+    def upload_file(self, path: str, file_name: str) -> str:
+        from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
+
+        with open(path, "rb") as handle:
+            request = (
+                CreateFileRequest.builder()
+                .request_body(
+                    CreateFileRequestBody.builder()
+                    .file_type("stream")
+                    .file_name(file_name)
+                    .file(handle)
+                    .build()
+                )
+                .build()
+            )
+            response = self._sdk().im.v1.file.create(request)
+        _ensure_success(response, "上传文件")
+        return str(response.data.file_key)
+
+    def send_image(self, open_id: str, image_key: str) -> str:
+        body = json.dumps({"image_key": image_key}, ensure_ascii=False)
+        return self._send(open_id, "image", body)
+
+    def send_file(self, open_id: str, file_key: str) -> str:
+        body = json.dumps({"file_key": file_key}, ensure_ascii=False)
+        return self._send(open_id, "file", body)
+
     def patch_card(self, message_id: str, card: dict) -> None:
         from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
 
@@ -337,7 +382,7 @@ class FeishuBot:
     ):
         self.app_id = app_id
         self.app_secret = app_secret
-        self.conversation = conversation or ConversationService()
+        self.conversation = conversation or ConversationService(deliver_assets=self._deliver_assets)
         self.deduper = deduper or MessageDeduper()
         self.api = api or FeishuApi(app_id, app_secret)
         self.executor = executor or ThreadPoolExecutor(
@@ -372,6 +417,13 @@ class FeishuBot:
             return card_action_toast("已收到")
         self.executor.submit(self._run, message)
         return card_action_toast("已记录，感谢反馈")
+
+    def _deliver_assets(self, user, message, artifacts: dict) -> None:
+        from reports.deliver import deliver_feishu
+
+        folder = artifacts.get("dir") or ""
+        paths = {name: os.path.join(folder, name) for name in artifacts.get("files") or []}
+        deliver_feishu(self.api, message.user_ext_id, {"paths": paths})
 
     def _run(self, message: IncomingMessage) -> None:
         sink = FeishuSink(self.api, message.user_ext_id)
@@ -448,6 +500,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     require_entrypoint("feishu")
     start_heartbeat()
+    try:
+        from reports.scheduler import start_inprocess
+
+        start_inprocess()
+    except Exception:
+        logging.getLogger("feishu").exception("定时报告没有随飞书进程启动")
     app_id = os.environ.get("FEISHU_APP_ID", "").strip()
     app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
     workers = os.environ.get("FEISHU_WORKERS", "").strip()

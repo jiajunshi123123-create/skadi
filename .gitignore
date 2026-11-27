@@ -1,5 +1,6 @@
 ﻿# Sensitive
 .env
+config/demo.env
 *.pem
 *.key
 

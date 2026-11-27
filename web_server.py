@@ -19,7 +19,7 @@ import os
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 # 导入编排器（与 DingTalk Bot 共享）
@@ -212,6 +212,15 @@ async def chat(request: Request):
                     import re
                     reply = re.sub(r'<!--M3_SQL:.+?-->', '', reply).rstrip()
 
+                if metadata.get("report"):
+                    try:
+                        from reports.files import download_hint, materialize_report
+
+                        saved = await asyncio.to_thread(materialize_report, caller_id, reply, metadata)
+                        reply += download_hint(saved["report_id"], saved.get("files") or [])
+                    except Exception:
+                        logger.exception("[Web] 报告文件没有写好")
+
                 # 推送完整回复
                 yield f"event: token\ndata: {json.dumps({'content': reply}, ensure_ascii=False)}\n\n"
 
@@ -389,6 +398,27 @@ def _health_payload() -> dict:
         'status': 'ok',
         'skills_loaded': len(skill_registry.get_all()),
     }
+
+
+@app.get("/api/reports/{report_id}")
+async def download_report(report_id: str, request: Request, name: str = "report.md"):
+    """只允许下载当前密钥自己的报告。找不到或不是本人的，都返回 404。"""
+    caller_id, rejected = _guard(request, admin=False)
+    if rejected:
+        return rejected
+    from reports.files import resolve_file
+
+    path = await asyncio.to_thread(resolve_file, caller_id, report_id, name)
+    if path is None:
+        return JSONResponse({"error": "报告不存在"}, status_code=404)
+    media = "application/octet-stream"
+    if name.endswith(".md"):
+        media = "text/markdown; charset=utf-8"
+    elif name.endswith(".png"):
+        media = "image/png"
+    elif name.endswith(".docx"):
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return FileResponse(path, media_type=media, filename=name)
 
 
 @app.get("/health")

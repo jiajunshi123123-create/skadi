@@ -83,9 +83,10 @@ def _summary(parts: list) -> str:
     anomalies = facts.get("anomalies") or []
     if anomalies:
         top = anomalies[0]
+        direction = "偏高" if top.get("direction") == "high" else "偏低"
         sentences.append(
             f"同星期几基线下绝对值最大的异常是 {top.get('date')}（{top.get('weekday')}），"
-            f"数值 {top.get('value')}，基线均值 {top.get('baseline_mean')}，z={top.get('z')}，方向 {top.get('direction')}。"
+            f"数值 {top.get('value')}，基线均值 {top.get('baseline_mean')}，z={top.get('z')}，{direction}。"
         )
     else:
         sentences.append("按同星期几基线，没有 |z| 大于 2 的点。")
@@ -110,9 +111,11 @@ def _sources(parts: list) -> str:
             lines.append(f"- {part.get('purpose')}：失败。{part.get('error')}")
             continue
         sql = result.get("sql_executed") or (part.get("plan") or {}).get("sql") or "（SQL 未返回）"
+        span = ""
+        if facts.get("date_min") and facts.get("date_max"):
+            span = f"，日期 {facts.get('date_min')} 至 {facts.get('date_max')}"
         lines.append(
-            f"- {part.get('purpose')}：返回 {result.get('row_count', facts.get('row_count', 0))} 行，"
-            f"日期 {facts.get('date_min')} 至 {facts.get('date_max')}。SQL：{sql}"
+            f"- {part.get('purpose')}：返回 {result.get('row_count', facts.get('row_count', 0))} 行{span}。SQL：{sql}"
         )
     return "\n".join(lines)
 
@@ -202,7 +205,7 @@ def _advice(parts: list) -> str:
         top = anomalies[0]
         lines.append(
             f"优先核对 {top.get('date')} 的 {top.get('metric') or (facts.get('series') or {}).get('metric')}："
-            f"它相对同星期几基线的 z={top.get('z')}，方向是 {top.get('direction')}。"
+            f"它相对同星期几基线的 z={top.get('z')}，{'偏高' if top.get('direction') == 'high' else '偏低'}。"
         )
     if missing:
         lines.append(f"先补查缺数日 {missing[0]}，缺数当天不要当成业务下跌。")

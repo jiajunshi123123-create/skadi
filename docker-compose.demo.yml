@@ -1,0 +1,61 @@
+# 演示栈。不要和 docker-compose.yml 一起用，里面没有生产库。
+# 启动：make demo
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: skadi_demo
+      MYSQL_USER: skadi_demo
+      MYSQL_PASSWORD: demo-only-password-not-for-production
+      MYSQL_ROOT_PASSWORD: demo-root-password-not-for-production
+    command: ["mysqld", "--character-set-server=utf8mb4", "--default-authentication-plugin=mysql_native_password"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uskadi_demo", "-pdemo-only-password-not-for-production"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "127.0.0.1:3307:3306"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agent_experience
+      POSTGRES_USER: agent_user
+      POSTGRES_PASSWORD: demo-only-pg-password-not-for-production-12
+    volumes:
+      - demo_pg:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./scripts/demo/seed_permissions.sql:/docker-entrypoint-initdb.d/02-demo-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_user -d agent_experience"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  demo-load:
+    build: .
+    env_file: config/demo.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: python scripts/load_demo_data.py
+    restart: "no"
+
+  web:
+    build: .
+    env_file: config/demo.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      demo-load:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - demo_reports:/app/data/reports
+      - ./config/data_dictionary.demo.yml:/app/config/data_dictionary.demo.yml:ro
+
+volumes:
+  demo_pg:
+  demo_reports:
