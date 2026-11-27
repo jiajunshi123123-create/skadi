@@ -704,7 +704,26 @@ async def run_agent(user_query: str, user_role: dict = None, last_context: dict 
         metadata 包含 plan_task, query_result, analysis, user_query
     """
     logger.info(f"[Orchestrator] 新查询: {user_query[:60]}... (角色: {user_role.get('role_id', 'N/A') if user_role else 'N/A'})")
-    
+
+    # 报告和明确要求基线的问题拆成多条子查询。追问仍走原来的单查询图。
+    if not last_context:
+        from reports.planner import needs_baseline_query
+
+        if needs_baseline_query(user_query):
+            try:
+                from reports.execute import run_report_mode
+
+                return await run_report_mode(user_query, user_role)
+            except Exception as exc:
+                logger.exception("[Orchestrator] 报告模式失败")
+                return (
+                    "⚠️ 报告没有生成\n"
+                    "━━━━━━━━━━━━━━━━\n"
+                    f"{exc}\n\n"
+                    "本次没有改用跳过权限检查的查询。",
+                    {"report": True, "error": str(exc), "user_query": user_query},
+                )
+
     initial_state: AgentState = {
         'user_query': user_query,
         'user_role': user_role,
