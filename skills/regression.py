@@ -44,4 +44,11 @@ class RegressionSkill(AnalysisSkill):
 - 例如："每增加1%营销预算，预期带来0.3%的收入增长"
 - 标注模型的局限性和适用范围
 - 给出优化建议：优先提升哪个变量效果最大
+
+斜率和 R² 只引用 analyze_data 的 regression。样本不足时沿用其中的 reason。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import regression_facts
+
+        return regression_facts(data, cols)

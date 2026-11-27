@@ -45,4 +45,11 @@ class DistributionSkill(AnalysisSkill):
 - 描述分布的形态特征（正态/偏态/双峰/均匀）
 - 指出集中与分散的关键发现
 - 对业务决策的启示（如：是否需要差异化策略）
+
+均值、中位数、分位数和变异系数以 analyze_data 的 distribution 为准。
 """
+
+    def analyze_data(self, data, cols):
+        from analysis.compute import distribution_facts
+
+        return distribution_facts(data, cols)

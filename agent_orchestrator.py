@@ -297,6 +297,13 @@ async def query_node(state: AgentState) -> dict:
         row_count = result.get('row_count', 0)
         logger.info(f"[Orchestrator] Query 完成: {row_count} 行数据")
 
+        # 压缩会丢掉大部分行。均值、基线和异常点必须先在全量上算完。
+        try:
+            from analysis.compute import attach_computed_facts
+            attach_computed_facts(result, state.get('user_query') or '')
+        except Exception:
+            logger.exception("[Orchestrator] 全量计算失败，分析将缺少计算结果")
+
         # === P0-1: 智能输出截断 ===
         # 对大结果集进行压缩，防止后续Agent（Inspection/Analysis）
         # 因上下文过大导致 Token 溢出或分析质量下降
@@ -432,6 +439,7 @@ async def analysis_node(state: AgentState) -> dict:
             anomaly_summary=anomaly_summary,
             inspection_context=inspection_context,
             skills_context=skills_context,
+            computed_facts=query_result.get('computed_facts'),
         )
         logger.info(f"[Orchestrator] Analysis 完成: {len(analysis)} 字符")
         return {
